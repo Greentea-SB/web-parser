@@ -1,39 +1,111 @@
+import os
+import base64
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from playwright.sync_api import sync_playwright
-import random
-import logging
+import time
+from datetime import datetime
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(message)s",
-    handlers=[logging.FileHandler("debug.log"), logging.StreamHandler()]
-)
+# Декодирование ключа из переменной окружения
+encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+creds_json = base64.b64decode(encoded_creds).decode('utf-8')
 
-def parse_data():
-    try:
-        with sync_playwright() as p:
-            browser = p.firefox.launch(headless=True)
+# Сохраняем временный файл ключа
+with open('temp_key.json', 'w') as f:
+    f.write(creds_json)
+
+# Настройки
+SPREADSHEET_ID = '1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE'  # Ваш ID таблицы
+SHEET_NAME = 'Sheet1'  # Название листа
+CREDS_FILE = 'temp_key.json'  # Временный файл ключа
+MAX_RETRIES = 5  # Количество попыток
+REQUEST_DELAY = 5  # Задержка между запросами
+START_ROW = 14  # Начальная строка с данными
+TOTAL_URLS = 500  # Общее количество URL
+
+# Классы для поиска
+TARGET_CLASSES = {
+    'col_d': 'css-sahmrr',
+    'col_e': 'css-1598eja', 
+    'col_f': 'css-nd24it'
+}
+
+def auth_google():
+    """Аутентификация в Google Sheets"""
+    scope = [
+        'https://spreadsheets.google.com/feeds',
+        'https://www.googleapis.com/auth/drive'
+    ]
+    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
+    return gspread.authorize(creds)
+
+def parse_data(url, browser):
+    """Парсинг данных с повторными попытками"""
+    for attempt in range(MAX_RETRIES):
+        try:
             page = browser.new_page()
+            page.goto(url, timeout=60000)
             
-            # Добавляем случайный параметр для обхода кэша
-            url = f"https://gmgn.ai/sol/address/7XJFKYt7fgABrxXZzkpqS7bUyPwAWaz1WSC2tfGW8nxh?nocache={random.randint(1, 1000)}"
-            page.goto(url)
+            # Ждем загрузки всех элементов
+            page.wait_for_selector(f'.{TARGET_CLASSES["col_d"]}', timeout=15000)
+            page.wait_for_selector(f'.{TARGET_CLASSES["col_e"]}', timeout=15000)
+            page.wait_for_selector(f'.{TARGET_CLASSES["col_f"]}', timeout=15000)
             
-            # Увеличиваем таймаут и добавляем проверку
-            page.wait_for_selector(".css-16udrhy", timeout=20000)
-            page.wait_for_timeout(3000)  # Дополнительное ожидание
+            # Извлекаем данные
+            result = {
+                'd': page.query_selector(f'.{TARGET_CLASSES["col_d"]}').inner_text().strip(),
+                'e': page.query_selector(f'.{TARGET_CLASSES["col_e"]}').inner_text().strip(),
+                'f': page.query_selector(f'.{TARGET_CLASSES["col_f"]}').inner_text().strip()
+            }
             
-            target_div = page.query_selector(".css-16udrhy")
-            if target_div:
-                percentage = target_div.inner_text()
-                logging.info(f"Успешно: {percentage}")
-                with open("output.txt", "a") as f:
-                    f.write(f"{percentage}\n")
-            else:
-                logging.warning("Элемент не найден.")
+            page.close()
+            return result
             
-            browser.close()
+        except Exception as e:
+            print(f"Попытка {attempt+1} не удалась: {str(e)}")
+            time.sleep(REQUEST_DELAY)
+        finally:
+            if 'page' in locals() and not page.is_closed():
+                page.close()
+    
+    return {'d': 'Ошибка', 'e': 'Ошибка', 'f': 'Ошибка'}
+
+def update_sheet(sheet, row, data):
+    """Обновление строки в таблице"""
+    try:
+        sheet.update(
+            f'D{row}:F{row}',
+            [[data['d'], data['e'], data['f'], datetime.now().strftime("%Y-%m-%d %H:%M:%S")]],
+            value_input_option='USER_ENTERED'
+        )
     except Exception as e:
-        logging.error(f"Критическая ошибка: {e}")
+        print(f"Ошибка при обновлении таблицы: {str(e)}")
+
+def main():
+    """Основная функция"""
+    gc = auth_google()
+    sheet = gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-setuid-sandbox']
+        )
+        
+        for i in range(START_ROW, START_ROW + TOTAL_URLS):
+            url = sheet.acell(f'C{i}').value
+            
+            if not url or not url.startswith('http'):
+                print(f"Строка {i}: Некорректный URL")
+                continue
+                
+            print(f"Обработка строки {i}: {url}")
+            result = parse_data(url, browser)
+            update_sheet(sheet, i, result)
+            
+            time.sleep(REQUEST_DELAY)
+        
+        browser.close()
 
 if __name__ == "__main__":
-    parse_data()
+    main()
