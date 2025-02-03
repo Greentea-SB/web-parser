@@ -24,7 +24,7 @@ with open('temp_key.json', 'w') as f:
 
 # Настройки
 SPREADSHEET_ID = '1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE'  # Ваш ID таблицы
-SHEET_NAME = 'Sheet1'  # Название листа
+SHEET_NAME = 'pars'  # Название листа
 CREDS_FILE = 'temp_key.json'  # Временный файл ключа
 MAX_RETRIES = 5  # Количество попыток
 REQUEST_DELAY = 5  # Задержка между запросами
