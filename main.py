@@ -5,235 +5,157 @@ import logging
 import time
 import random
 from datetime import datetime
+from oauth2client.service_account import ServiceAccountCredentials
 from playwright.sync_api import sync_playwright
-from typing import Dict, List, Optional
 
-class ParserConfig:
-    """Конфигурация для различных вариантов структуры сайта"""
-    URL_COLUMN = 3  # Колонка C
-    TARGETS = {
-        'D': [
-            ['css-16udrhy'],
-            ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
-            ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
-        ],
-        'E': [
-            ['css-16udrhy'],
-            ['css-1598eja'],
-            ['css-d865bw']
-        ],
-        'F': [
-            ['css-16udrhy'],
-            ['css-kavdos'],
-            ['css-krr03m']
+# Конфигурация
+CONFIG = {
+    "SPREADSHEET_ID": "1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE",
+    "SHEET_NAME": "pars",
+    "CREDS_FILE": "temp_key.json",
+    "MAX_RETRIES": 3,
+    "REQUEST_DELAY": 15,
+    "START_ROW": 14,
+    "TOTAL_URLS": 500,
+    "TARGET_CLASSES": {
+        'col_d': 'css-sahmrr',
+        'col_e': 'css-1598eja',
+        'col_f': 'css-nd24it'
+    }
+}
+
+def setup_browser(playwright):
+    """Настройка браузера с использованием playwright объекта"""
+    return playwright.chromium.launch(
+        headless=True,
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         ]
-    }
-    TIMEOUTS = {
-        'page_load': 45000,
-        'element': 15000,
-        'retry_delay': lambda attempt: 10 * (attempt + 1)
-    }
+    )
 
-class DynamicParser:
-    def __init__(self):
-        self.browser = None
-        self.class_cache: Dict[str, Dict[str, str]] = {}
+def human_like_delay(page):
+    """Имитация человеческого поведения"""
+    time.sleep(random.uniform(1.5, 4.5))
+    page.mouse.move(
+        random.randint(0, 500),
+        random.randint(0, 500)
+    )
 
-    def init_browser(self, playwright):
-        """Инициализация браузера с расширенными настройками"""
-        self.browser = playwright.chromium.launch(
-            headless=True,
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            ]
-        )
-    
-    def parse_page(self, url: str, domain: str) -> Dict[str, Optional[List[str]]]:
-        """Основная функция парсинга с автоматическим определением структуры"""
-        result = {col: None for col in ParserConfig.TARGETS.keys()}
-        
-        if domain not in self.class_cache:
-            self.class_cache[domain] = {}
+def handle_captcha(page):
+    """Попытка обхода простой капчи"""
+    if page.query_selector("text=Verify you are human"):
+        logging.warning("Обнаружена капча. Попытка обхода...")
+        page.reload()
+        human_like_delay(page)
+        return True
+    return False
 
-        for attempt in range(3):
-            try:
-                page = self.browser.new_page()
-                page.set_default_timeout(ParserConfig.TIMEOUTS['page_load'])
-                
-                # Загрузка страницы с рандомизированными действиями
-                page.goto(url, wait_until="networkidle")
-                self.human_like_interaction(page)
-                
-                # Определение актуальных классов для домена
-                self.detect_classes(page, domain)
-                
-                # Сбор данных с кешированных классов
-                for col in ParserConfig.TARGETS.keys():
-                    result[col] = self.safe_extract(
-                        page, 
-                        self.class_cache[domain].get(col, ParserConfig.TARGETS[col][0]),
-                        col
-                    )
-                
-                return result
-
-            except Exception as e:
-                logging.error(f"Attempt {attempt+1} failed: {str(e)}")
-                time.sleep(ParserConfig.TIMEOUTS['retry_delay'](attempt))
-            finally:
-                if page:
-                    page.close()
-        
-        return result
-
-    def detect_classes(self, page, domain: str):
-        """Автоматическое определение рабочих классов для домена"""
-        for col, variants in ParserConfig.TARGETS.items():
-            if col in self.class_cache[domain]:
+def parse_data(url, browser):
+    """Улучшенный парсинг с обработкой динамического контента"""
+    for attempt in range(CONFIG["MAX_RETRIES"]):
+        page = None
+        try:
+            page = browser.new_page()
+            page.set_default_timeout(60000)
+            
+            # Загрузка страницы с эмуляцией человека
+            page.goto(url, wait_until="domcontentloaded")
+            human_like_delay(page)
+            
+            # Проверка на капчу
+            if handle_captcha(page):
                 continue
                 
-            for class_group in variants:
-                for class_name in class_group:
-                    if page.query_selector(f'.{class_name}'):
-                        self.class_cache[domain][col] = class_name
-                        logging.info(f"Detected class {class_name} for {domain} column {col}")
-                        break
-                if col in self.class_cache[domain]:
-                    break
-
-    def safe_extract(self, page, selector: str, col: str) -> List[str]:
-        """Безопасное извлечение данных с резервными стратегиями"""
-        try:
-            elements = page.query_selector_all(f'.{selector}')
-            return [el.inner_text().strip() for el in elements if el]
-        except:
-            logging.warning(f"Failed to extract {col} using {selector}")
-            return self.fallback_extract(page, col)
-
-    def fallback_extract(self, page, col: str) -> List[str]:
-        """Резервные методы извлечения данных"""
-        # Стратегия 1: Поиск по текстовым паттернам
-        text_patterns = {
-            'D': ['price', 'value', 'cost'],
-            'E': ['rating', 'score', 'review'],
-            'F': ['quantity', 'count', 'stock']
-        }
-        
-        for pattern in text_patterns[col]:
-            element = page.query_selector(f'text/{pattern}i')
-            if element:
-                return [element.inner_text().strip()]
-        
-        # Стратегия 2: Поиск по структурным признакам
-        structural_selectors = {
-            'D': 'div:near(:text("Price"))',
-            'E': 'span:below(:text("Rating"))',
-            'F': 'td:right-of(:text("Stock"))'
-        }
-        
-        element = page.query_selector(structural_selectors[col])
-        if element:
-            return [element.inner_text().strip()]
-        
-        return ["N/A"]
-
-    def human_like_interaction(self, page):
-        """Имитация человеческого поведения"""
-        actions = [
-            lambda: page.mouse.move(random.randint(0, 500), random.randint(0, 500)),
-            lambda: page.keyboard.press("PageDown"),
-            lambda: time.sleep(random.uniform(0.5, 2.5)),
-            lambda: page.mouse.click(random.randint(0, 500), random.randint(0, 500))
-        ]
-        random.shuffle(actions)
-        [action() for action in actions[:3]]
-
-class GoogleSheetManager:
-    def __init__(self, creds_file: str):
-        self.gc = gspread.service_account(filename=creds_file)
-        self.sheet = None
+            # Поиск элементов с расширенной логикой
+            results = {}
+            for col, selector in CONFIG["TARGET_CLASSES"].items():
+                try:
+                    page.wait_for_selector(f'.{selector}', timeout=25000)
+                    elements = page.query_selector_all(f'.{selector}')
+                    results[col] = [el.inner_text().strip() for el in elements]
+                except Exception as e:
+                    logging.warning(f"Элемент {selector} не найден: {str(e)}")
+                    results[col] = ["N/A"]
+            
+            return results
+            
+        except Exception as e:
+            logging.error(f"Попытка {attempt+1} провалена: {str(e)}")
+            time.sleep(CONFIG["REQUEST_DELAY"] * (attempt + 1))
+        finally:
+            if page:
+                page.close()
     
-    def init_sheet(self, spreadsheet_id: str, sheet_name: str):
-        try:
-            spreadsheet = self.gc.open_by_key(spreadsheet_id)
-            self.sheet = spreadsheet.worksheet(sheet_name)
-        except gspread.exceptions.WorksheetNotFound:
-            self.sheet = spreadsheet.add_worksheet(sheet_name, 1000, 26)
-
-    def update_row(self, row: int, data: dict):
-        """Обновление строки с автоматическим расширением таблицы"""
-        try:
-            self.sheet.update(
-                f'D{row}:G{row}',
-                [[
-                    ', '.join(data.get('D', [])),
-                    ', '.join(data.get('E', [])),
-                    ', '.join(data.get('F', [])),
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ]],
-                value_input_option='USER_ENTERED'
-            )
-        except gspread.exceptions.APIError as e:
-            self.handle_api_error(e, row)
-
-    def handle_api_error(self, error, row: int):
-        """Обработка специфичных ошибок Google Sheets API"""
-        if "exceeds grid limits" in str(error):
-            self.sheet.add_rows(100)
-            self.update_row(row)
-        else:
-            logging.error(f"Sheet API Error: {str(error)}")
-            self.sheet.update_cell(row, 8, f"API Error: {str(error)}")
+    return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
 
 def main():
-    """Главная управляющая функция"""
+    """Главная функция с расширенной обработкой ошибок"""
     try:
-        # Инициализация
-        parser = DynamicParser()
-        sheet_manager = GoogleSheetManager("temp_creds.json")
+        # Инициализация Google Sheets
+        encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+        creds_json = base64.b64decode(encoded_creds).decode('utf-8')
         
-        # Конфигурация
-        encoded_creds = base64.b64decode(os.getenv('GOOGLE_CREDENTIALS_BASE64')).decode()
-        with open("temp_creds.json", "w") as f:
-            f.write(encoded_creds)
+        with open(CONFIG["CREDS_FILE"], 'w') as f:
+            f.write(creds_json)
         
-        sheet_manager.init_sheet(
-            "1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE",
-            "pars"
-        )
-
+        gc = gspread.service_account(filename=CONFIG["CREDS_FILE"])
+        spreadsheet = gc.open_by_key(CONFIG["SPREADSHEET_ID"])
+        sheet = spreadsheet.worksheet(CONFIG["SHEET_NAME"])
+        
+        # Инициализация браузера
         with sync_playwright() as playwright:
-            parser.init_browser(playwright)
+            browser = setup_browser(playwright)
             
-            for row in range(14, 514):  # Строки 14-513
+            for row in range(CONFIG["START_ROW"], CONFIG["START_ROW"] + CONFIG["TOTAL_URLS"]):
                 try:
-                    url = sheet_manager.sheet.cell(row, ParserConfig.URL_COLUMN).value
+                    url = sheet.cell(row, 3).value  # Колонка C
                     if not url or not url.startswith('http'):
+                        logging.warning(f"Пропуск строки {row}: неверный URL")
                         continue
                         
-                    domain = url.split('//')[-1].split('/')[0]
-                    result = parser.parse_page(url, domain)
-                    sheet_manager.update_row(row, result)
+                    result = parse_data(url, browser)
                     
-                    time.sleep(random.expovariate(1/3))  # Экспоненциальное распределение задержек
-
+                    # Подготовка данных
+                    values = [
+                        ', '.join(result['col_d']),
+                        ', '.join(result['col_e']),
+                        ', '.join(result['col_f']),
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ]
+                    
+                    # Пакетное обновление
+                    sheet.update(
+                        f'D{row}:G{row}',
+                        [values],
+                        value_input_option='USER_ENTERED'
+                    )
+                    
+                    logging.info(f"Строка {row} успешно обновлена")
+                    time.sleep(random.uniform(2.5, 6.5))
+                    
                 except Exception as e:
-                    logging.error(f"Row {row} processing failed: {str(e)}")
-                    sheet_manager.sheet.update_cell(row, 8, f"Processing Error: {str(e)}")
-
+                    logging.error(f"Критическая ошибка в строке {row}: {str(e)}")
+                    sheet.update_cell(row, 8, f"ERROR: {str(e)}")
+                    continue
+                    
+            browser.close()
+            
+    except Exception as e:
+        logging.critical(f"Фатальная ошибка: {str(e)}")
     finally:
-        if os.path.exists("temp_creds.json"):
-            os.remove("temp_creds.json")
+        if os.path.exists(CONFIG["CREDS_FILE"]):
+            os.remove(CONFIG["CREDS_FILE"])
 
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.FileHandler("smart_parser.log"),
+            logging.FileHandler("parser.log"),
             logging.StreamHandler()
         ]
     )
