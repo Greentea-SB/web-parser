@@ -23,10 +23,10 @@ CONFIG = {
     "SPREADSHEET_ID": "1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE",
     "SHEET_NAME": "pars",
     "CREDS_FILE": "temp_key.json",
-    "MAX_RETRIES": 5,
+    "MAX_RETRIES": 3,
     "REQUEST_DELAY": 10,  # Увеличена задержка
     "START_ROW": 14,
-    "TOTAL_URLS": 500,
+    "TOTAL_URLS": 3,
     "TARGET_CLASSES": {
         'col_d': 'css-sahmrr',
         'col_e': 'css-1598eja',
