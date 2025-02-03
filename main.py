@@ -29,7 +29,7 @@ CREDS_FILE = 'temp_key.json'  # Временный файл ключа
 MAX_RETRIES = 5  # Количество попыток
 REQUEST_DELAY = 5  # Задержка между запросами
 START_ROW = 14  # Начальная строка с данными
-TOTAL_URLS = 500  # Общее количество URL
+TOTAL_URLS = 5  # Общее количество URL
 
 # Классы для поиска
 TARGET_CLASSES = {
