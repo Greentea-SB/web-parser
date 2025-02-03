@@ -26,8 +26,8 @@ jobs:
           
       - name: Run parser
         run: |
-          python main.py  # Используем правильное имя файла
-          rm -f temp_key.json
+          python main.py
+          rm -f temp_key.json  # Удаляем ключ после использования
           
       - name: Upload logs
         uses: actions/upload-artifact@v4
