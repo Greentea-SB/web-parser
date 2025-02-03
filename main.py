@@ -24,17 +24,9 @@ CONFIG = {
     }
 }
 
-def human_like_delay():
-    """Имитация человеческого поведения"""
-    time.sleep(random.uniform(1.5, 4.5))
-    page.mouse.move(
-        random.randint(0, 500),
-        random.randint(0, 500)
-    )
-
-def setup_browser():
-    """Настройка браузера с расширенными параметрами"""
-    return p.chromium.launch(
+def setup_browser(playwright):
+    """Настройка браузера с использованием playwright объекта"""
+    return playwright.chromium.launch(
         headless=True,
         args=[
             '--no-sandbox',
@@ -45,25 +37,34 @@ def setup_browser():
         ]
     )
 
+def human_like_delay(page):
+    """Имитация человеческого поведения"""
+    time.sleep(random.uniform(1.5, 4.5))
+    page.mouse.move(
+        random.randint(0, 500),
+        random.randint(0, 500)
+    )
+
 def handle_captcha(page):
     """Попытка обхода простой капчи"""
     if page.query_selector("text=Verify you are human"):
         logging.warning("Обнаружена капча. Попытка обхода...")
         page.reload()
-        human_like_delay()
+        human_like_delay(page)
         return True
     return False
 
 def parse_data(url, browser):
     """Улучшенный парсинг с обработкой динамического контента"""
     for attempt in range(CONFIG["MAX_RETRIES"]):
+        page = None
         try:
             page = browser.new_page()
             page.set_default_timeout(60000)
             
             # Загрузка страницы с эмуляцией человека
             page.goto(url, wait_until="domcontentloaded")
-            human_like_delay()
+            human_like_delay(page)
             
             # Проверка на капчу
             if handle_captcha(page):
@@ -86,7 +87,7 @@ def parse_data(url, browser):
             logging.error(f"Попытка {attempt+1} провалена: {str(e)}")
             time.sleep(CONFIG["REQUEST_DELAY"] * (attempt + 1))
         finally:
-            if 'page' in locals():
+            if page:
                 page.close()
     
     return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
@@ -106,8 +107,8 @@ def main():
         sheet = spreadsheet.worksheet(CONFIG["SHEET_NAME"])
         
         # Инициализация браузера
-        with sync_playwright() as p:
-            browser = setup_browser()
+        with sync_playwright() as playwright:
+            browser = setup_browser(playwright)
             
             for row in range(CONFIG["START_ROW"], CONFIG["START_ROW"] + CONFIG["TOTAL_URLS"]):
                 try:
