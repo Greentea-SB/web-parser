@@ -26,10 +26,10 @@ with open('temp_key.json', 'w') as f:
 SPREADSHEET_ID = '1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE'  # Ваш ID таблицы
 SHEET_NAME = 'pars'  # Название листа (убедитесь, что оно правильное)
 CREDS_FILE = 'temp_key.json'  # Временный файл ключа
-MAX_RETRIES = 5  # Количество попыток
+MAX_RETRIES = 3  # Количество попыток
 REQUEST_DELAY = 5  # Задержка между запросами
 START_ROW = 14  # Начальная строка с данными
-TOTAL_URLS = 5  # Общее количество URL
+TOTAL_URLS = 3  # Общее количество URL
 
 # Классы для поиска
 TARGET_CLASSES = {
