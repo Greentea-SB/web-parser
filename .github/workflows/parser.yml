@@ -30,7 +30,7 @@ jobs:
           rm -f temp_key.json  # Удаляем ключ после использования
           
       - name: Upload logs
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: debug.log
           path: debug.log
