@@ -1,0 +1,36 @@
+name: Sheets Parser
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Каждые 6 часов
+  workflow_dispatch:  # Ручной запуск
+
+jobs:
+  parse-data:
+    runs-on: ubuntu-latest
+    env:
+      GOOGLE_CREDENTIALS_BASE64: ${{ secrets.GOOGLE_CREDENTIALS_BASE64 }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          pip install playwright gspread oauth2client
+          playwright install chromium
+          
+      - name: Run parser
+        run: |
+          python your_script.py
+          rm -f temp_key.json  # Удаляем ключ после использования
+          
+      - name: Upload logs
+        uses: actions/upload-artifact@v3
+        with:
+          name: debug.log
+          path: debug.log
