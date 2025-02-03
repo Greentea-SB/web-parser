@@ -23,9 +23,8 @@ with open('temp_key.json', 'w') as f:
     f.write(creds_json)
 
 # Настройки
-
 SPREADSHEET_ID = '1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE'  # Ваш ID таблицы
-SHEET_NAME = 'pars'  # Убедитесь, что это правильное имя листа
+SHEET_NAME = 'pars'  # Название листа (убедитесь, что оно правильное)
 CREDS_FILE = 'temp_key.json'  # Временный файл ключа
 MAX_RETRIES = 5  # Количество попыток
 REQUEST_DELAY = 5  # Задержка между запросами
@@ -96,7 +95,14 @@ def update_sheet(sheet, row, data):
 def main():
     """Основная функция"""
     gc = auth_google()
-    sheet = gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    spreadsheet = gc.open_by_key(SPREADSHEET_ID)
+    
+    # Вывод всех листов для отладки
+    logging.info("Доступные листы:")
+    for sheet in spreadsheet.worksheets():
+        logging.info(f"- {sheet.title}")
+    
+    sheet = spreadsheet.worksheet(SHEET_NAME)
     
     with sync_playwright() as p:
         browser = p.chromium.launch(
