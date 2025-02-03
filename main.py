@@ -5,6 +5,14 @@ from oauth2client.service_account import ServiceAccountCredentials
 from playwright.sync_api import sync_playwright
 import time
 from datetime import datetime
+import logging
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(message)s",
+    handlers=[logging.FileHandler("debug.log"), logging.StreamHandler()]
+)
 
 # Декодирование ключа из переменной окружения
 encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
@@ -43,6 +51,7 @@ def parse_data(url, browser):
     """Парсинг данных с повторными попытками"""
     for attempt in range(MAX_RETRIES):
         try:
+            logging.info(f"Парсинг URL: {url} (попытка {attempt + 1})")
             page = browser.new_page()
             page.goto(url, timeout=60000)
             
@@ -59,10 +68,11 @@ def parse_data(url, browser):
             }
             
             page.close()
+            logging.info(f"Данные: {result}")
             return result
             
         except Exception as e:
-            print(f"Попытка {attempt+1} не удалась: {str(e)}")
+            logging.error(f"Ошибка при парсинге {url}: {str(e)}")
             time.sleep(REQUEST_DELAY)
         finally:
             if 'page' in locals() and not page.is_closed():
@@ -78,8 +88,9 @@ def update_sheet(sheet, row, data):
             [[data['d'], data['e'], data['f'], datetime.now().strftime("%Y-%m-%d %H:%M:%S")]],
             value_input_option='USER_ENTERED'
         )
+        logging.info(f"Обновление строки {row}: {data}")
     except Exception as e:
-        print(f"Ошибка при обновлении таблицы: {str(e)}")
+        logging.error(f"Ошибка при обновлении таблицы: {str(e)}")
 
 def main():
     """Основная функция"""
@@ -96,10 +107,10 @@ def main():
             url = sheet.acell(f'C{i}').value
             
             if not url or not url.startswith('http'):
-                print(f"Строка {i}: Некорректный URL")
+                logging.warning(f"Строка {i}: Некорректный URL")
                 continue
                 
-            print(f"Обработка строки {i}: {url}")
+            logging.info(f"Обработка строки {i}: {url}")
             result = parse_data(url, browser)
             update_sheet(sheet, i, result)
             
