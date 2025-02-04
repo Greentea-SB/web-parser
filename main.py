@@ -1,9 +1,9 @@
-import os
 import base64
 import gspread
 import logging
 import time
 import random
+import os
 from datetime import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 from playwright.sync_api import sync_playwright
@@ -18,9 +18,9 @@ CONFIG = {
     "START_ROW": 14,
     "TOTAL_URLS": 500,
     "TARGET_CLASSES": {
-        'col_d': 'css-sahmrr',
-        'col_e': 'css-1598eja',
-        'col_f': 'css-nd24it'
+        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-16udrhy'],
+        'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
+        'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     }
 }
 
@@ -55,7 +55,7 @@ def handle_captcha(page):
     return False
 
 def parse_data(url, browser):
-    """Улучшенный парсинг с обработкой динамического контента"""
+    """Улучшенный парсинг с обработкой динамического контента и несколькими вариантами классов"""
     for attempt in range(CONFIG["MAX_RETRIES"]):
         page = None
         try:
@@ -70,17 +70,23 @@ def parse_data(url, browser):
             if handle_captcha(page):
                 continue
                 
-            # Поиск элементов с расширенной логикой
+            # Поиск элементов с альтернативными классами
             results = {}
-            for col, selector in CONFIG["TARGET_CLASSES"].items():
-                try:
-                    page.wait_for_selector(f'.{selector}', timeout=25000)
-                    elements = page.query_selector_all(f'.{selector}')
-                    results[col] = [el.inner_text().strip() for el in elements]
-                except Exception as e:
-                    logging.warning(f"Элемент {selector} не найден: {str(e)}")
-                    results[col] = ["N/A"]
-            
+            for col, selectors in CONFIG["TARGET_CLASSES"].items():
+                results[col] = ["N/A"]  # Значение по умолчанию
+                
+                # Перебор всех возможных селекторов для колонки
+                for selector in selectors:
+                    try:
+                        page.wait_for_selector(f'.{selector}', timeout=15000)
+                        elements = page.query_selector_all(f'.{selector}')
+                        if elements and any(el.inner_text().strip() for el in elements):
+                            results[col] = [el.inner_text().strip() for el in elements if el.inner_text().strip()]
+                            break  # Успешно нашли элементы
+                    except Exception as e:
+                        logging.debug(f"Селектор {selector} не сработал: {str(e)}")
+                        continue  # Пробуем следующий селектор
+                        
             return results
             
         except Exception as e:
@@ -102,7 +108,11 @@ def main():
         with open(CONFIG["CREDS_FILE"], 'w') as f:
             f.write(creds_json)
         
-        gc = gspread.service_account(filename=CONFIG["CREDS_FILE"])
+        scope = ['https://spreadsheets.google.com/feeds',
+                 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_name(CONFIG["CREDS_FILE"], scope)
+        gc = gspread.authorize(creds)
+        
         spreadsheet = gc.open_by_key(CONFIG["SPREADSHEET_ID"])
         sheet = spreadsheet.worksheet(CONFIG["SHEET_NAME"])
         
@@ -110,20 +120,22 @@ def main():
         with sync_playwright() as playwright:
             browser = setup_browser(playwright)
             
-            for row in range(CONFIG["START_ROW"], CONFIG["START_ROW"] + CONFIG["TOTAL_URLS"]):
+            for i in range(CONFIG["TOTAL_URLS"]):
+                row = CONFIG["START_ROW"] + i
                 try:
                     url = sheet.cell(row, 3).value  # Колонка C
                     if not url or not url.startswith('http'):
                         logging.warning(f"Пропуск строки {row}: неверный URL")
                         continue
                         
+                    logging.info(f"Обработка строки {row}: {url}")
                     result = parse_data(url, browser)
                     
-                    # Подготовка данных
+                    # Подготовка данных для записи
                     values = [
-                        ', '.join(result['col_d']),
-                        ', '.join(result['col_e']),
-                        ', '.join(result['col_f']),
+                        ', '.join(result['col_d'][:3]),  # Первые 3 элемента
+                        ', '.join(result['col_e'][:3]),
+                        ', '.join(result['col_f'][:3]),
                         datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     ]
                     
@@ -134,11 +146,11 @@ def main():
                         value_input_option='USER_ENTERED'
                     )
                     
-                    logging.info(f"Строка {row} успешно обновлена")
-                    time.sleep(random.uniform(2.5, 6.5))
+                    # Случайная задержка между запросами
+                    time.sleep(random.uniform(2.5, 7.5))
                     
                 except Exception as e:
-                    logging.error(f"Критическая ошибка в строке {row}: {str(e)}")
+                    logging.error(f"Ошибка в строке {row}: {str(e)}")
                     sheet.update_cell(row, 8, f"ERROR: {str(e)}")
                     continue
                     
