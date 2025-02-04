@@ -18,7 +18,7 @@ CONFIG = {
     "START_ROW": 14,
     "TOTAL_URLS": 500,
     "TARGET_CLASSES": {
-        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-16udrhy'],
+        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     }
