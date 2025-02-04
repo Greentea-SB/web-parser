@@ -130,7 +130,6 @@ def main():
                         ', '.join(clean_numeric_values(result['col_d'][:3])),
                         ', '.join(clean_numeric_values(result['col_e'][:3])),
                         ', '.join(clean_numeric_values(result['col_f'][:3])),
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     ]
                     
                     sheet.update(
