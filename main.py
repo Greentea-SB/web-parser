@@ -17,65 +17,58 @@ CONFIG = {
     "START_ROW": 14,
     "TOTAL_URLS": 500,
     "TARGET_CLASSES": {
-        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-16udrhy'],
+       'col_d': ['css-16udrhy', 'css-16udrhy', 'css-16udrhy'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     }
 }
 
 def clean_numeric_values(data_list):
-    """Очистка числовых значений для корректной обработки в Google Sheets"""
+    """Очистка числовых значений с сохранением форматирования"""
     cleaned = []
     for item in data_list:
-        try:
-            # Удаляем нечисловые символы и нормализуем формат
-            processed = (
-                item.strip()
-                .replace('+', '')
-            )
-            
-            # Пробуем преобразовать к числу
-            num = float(processed)
-            
-            # Форматируем без экспоненты и лишних нулей
-            if num.is_integer():
-                cleaned.append(str(int(num)))
-            else:
-                cleaned.append(f"{num:.2f}".rstrip('0').rstrip('.'))
-        except:
-            cleaned.append(item)
+        processed = (
+            item.strip()
+            .replace('+', '')
+            .replace(' ', '')
+            .replace('$', '')
+            .replace('€', '')
+            .replace('£', '')
+        )
+        cleaned.append(processed)
     return cleaned
 
+def setup_browser(playwright):
+    """Настройка браузера"""
+    return playwright.chromium.launch(
+        headless=True,
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        ]
+    )
+
 def parse_data(url, browser):
-    # ... остальная часть функции parse_data без изменений ...
+    """Логика парсинга (без изменений)"""
+    # ... (остальной код функции parse_data из предыдущего ответа)
 
 def main():
+    """Главная функция"""
     try:
-        # ... код инициализации Google Sheets ...
-
-        with sync_playwright() as playwright:
-            browser = setup_browser(playwright)
-            
-            for i in range(CONFIG["TOTAL_URLS"]):
-                row = CONFIG["START_ROW"] + i
-                try:
-                    # ... получение URL и парсинг данных ...
-
-                    # Подготовка данных с очисткой числовых значений
-                    values = [
-                        ', '.join(clean_numeric_values(result['col_d'][:3])),
-                        ', '.join(clean_numeric_values(result['col_e'][:3])),
-                        ', '.join(clean_numeric_values(result['col_f'][:3])),
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    ]
-
-                    # ... обновление таблицы ...
-
-                except Exception as e:
-                    # ... обработка ошибок ...
-
-    # ... остальная часть кода без изменений ...
+        # ... (код инициализации Google Sheets и браузера из предыдущего ответа)
+        
+        # Блок обработки данных
+        values = [
+            ', '.join(clean_numeric_values(result['col_d'][:3])),
+            ', '.join(clean_numeric_values(result['col_e'][:3])),
+            ', '.join(clean_numeric_values(result['col_f'][:3])),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ]
+        
+        # ... (остальной код main из предыдущего ответа)
 
 if __name__ == "__main__":
-    # ... инициализация логгера ...
-    main()
+   
