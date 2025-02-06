@@ -1,3 +1,4 @@
+# main.py
 import base64
 import gspread
 import logging
@@ -8,6 +9,16 @@ from datetime import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 from playwright.sync_api import sync_playwright
 
+# Настройка логгера в начале
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("parser.log"),  # Изменено имя файла
+        logging.StreamHandler()
+    ]
+)
+
 CONFIG = {
     "SPREADSHEET_ID": "1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE",
     "SHEET_NAME": "pars",
@@ -17,13 +28,14 @@ CONFIG = {
     "REQUEST_DELAY": 15,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
-    "BATCH_SIZE": 25,  # Новый параметр для размера блока
+    "BATCH_SIZE": 25,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     }
 }
+
 
 # Остальные функции остаются без изменений до функции main()
 
