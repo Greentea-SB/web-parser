@@ -8,16 +8,6 @@ from datetime import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 from playwright.sync_api import sync_playwright
 
-# Настройка логгера
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("parser.log"),
-        logging.StreamHandler()
-    ]
-)
-
 CONFIG = {
     "SPREADSHEET_ID": "1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE",
     "SHEET_NAME": "pars",
@@ -27,7 +17,6 @@ CONFIG = {
     "REQUEST_DELAY": 15,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
-    "BATCH_SIZE": 25,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
@@ -36,7 +25,6 @@ CONFIG = {
 }
 
 def clean_numeric_values(data_list):
-    """Очистка числовых значений"""
     cleaned = []
     for item in data_list:
         processed = (
@@ -51,7 +39,6 @@ def clean_numeric_values(data_list):
     return cleaned
 
 def setup_browser(playwright):
-    """Инициализация браузера"""
     return playwright.chromium.launch(
         headless=True,
         args=[
@@ -64,7 +51,6 @@ def setup_browser(playwright):
     )
 
 def human_like_delay(page):
-    """Имитация человеческого поведения"""
     time.sleep(random.uniform(1.5, 4.5))
     page.mouse.move(
         random.randint(0, 500),
@@ -72,7 +58,6 @@ def human_like_delay(page):
     )
 
 def parse_data(url, browser):
-    """Парсинг данных с сайта"""
     for attempt in range(CONFIG["MAX_RETRIES"]):
         page = None
         try:
@@ -105,11 +90,9 @@ def parse_data(url, browser):
     return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
 
 def has_na_values(result):
-    """Проверка наличия N/A значений"""
     return any("N/A" in values for values in result.values())
 
 def process_row_data(url, browser):
-    """Обработка данных с повторами"""
     for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
         result = parse_data(url, browser)
         if not has_na_values(result):
@@ -119,9 +102,7 @@ def process_row_data(url, browser):
     return result
 
 def main():
-    """Главная функция"""
     try:
-        # Инициализация Google Sheets
         encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
         if not encoded_creds:
             raise ValueError("GOOGLE_CREDENTIALS_BASE64 not set")
@@ -129,77 +110,39 @@ def main():
         with open(CONFIG["CREDS_FILE"], 'w') as f:
             f.write(base64.b64decode(encoded_creds).decode('utf-8'))
 
-        scope = ['https://spreadsheets.google.com/feeds', 
-                'https://www.googleapis.com/auth/drive']
-        gc = gspread.authorize(
-            ServiceAccountCredentials.from_json_keyfile_name(
-                CONFIG["CREDS_FILE"], 
-                scope
-            )
-        )
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name(CONFIG["CREDS_FILE"], scope))
         sheet = gc.open_by_key(CONFIG["SPREADSHEET_ID"]).worksheet(CONFIG["SHEET_NAME"])
 
         with sync_playwright() as playwright:
             browser = setup_browser(playwright)
             
-            # Получаем все URL
-            all_urls = [
-                (CONFIG["START_ROW"] + i, sheet.cell(CONFIG["START_ROW"] + i, 3).value)
-                for i in range(CONFIG["TOTAL_URLS"])
-            ]
-            
-            # Фильтрация URL
-            valid_urls = [(row, url) for row, url in all_urls if url and url.startswith('http')]
-            total_batches = (len(valid_urls) + CONFIG["BATCH_SIZE"] - 1) // CONFIG["BATCH_SIZE"]
-            
-            for batch_num in range(total_batches):
-                start_idx = batch_num * CONFIG["BATCH_SIZE"]
-                end_idx = start_idx + CONFIG["BATCH_SIZE"]
-                current_batch = valid_urls[start_idx:end_idx]
-                
-                remaining_urls = current_batch.copy()
-                attempt = 0
-                
-                while attempt < CONFIG["MAX_RETRIES"] and remaining_urls:
-                    logging.info(f"Batch {batch_num+1}, attempt {attempt+1}")
-                    failed_urls = []
+            for i in range(CONFIG["TOTAL_URLS"]):
+                row = CONFIG["START_ROW"] + i
+                try:
+                    url = sheet.cell(row, 3).value
+                    if not url or not url.startswith('http'):
+                        continue
                     
-                    for row, url in remaining_urls:
-                        try:
-                            result = process_row_data(url, browser)
-                            
-                            values = [
-                                ', '.join(clean_numeric_values(result['col_d'][:3])),
-                                ', '.join(clean_numeric_values(result['col_e'][:3])),
-                                ', '.join(clean_numeric_values(result['col_f'][:3])),
-                                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            ]
-                            
-                            sheet.update(
-                                f'D{row}:G{row}',
-                                [values],
-                                value_input_option='USER_ENTERED'
-                            )
-                            
-                            logging.info(f"Row {row} processed successfully")
-                            
-                        except Exception as e:
-                            logging.error(f"Row {row} error: {str(e)}")
-                            failed_urls.append((row, url))
-                            sheet.update_cell(row, 8, f"ERROR: {str(e)}")
+                    result = process_row_data(url, browser)
                     
-                    remaining_urls = failed_urls
-                    attempt += 1
+                    values = [
+                        ', '.join(clean_numeric_values(result['col_d'][:3])),
+                        ', '.join(clean_numeric_values(result['col_e'][:3])),
+                        ', '.join(clean_numeric_values(result['col_f'][:3])),
+                    ]
                     
-                    if remaining_urls:
-                        delay = CONFIG["REQUEST_DELAY"] * attempt
-                        logging.info(f"Retrying in {delay} seconds...")
-                        time.sleep(delay)
-                
-                if remaining_urls:
-                    logging.warning(f"Batch {batch_num+1} failed URLs: {len(remaining_urls)}")
-                
-                time.sleep(random.uniform(5, 15))
+                    sheet.update(
+                        f'D{row}:G{row}',
+                        [values],
+                        value_input_option='USER_ENTERED'
+                    )
+                    
+                    time.sleep(random.uniform(2.5, 7.5))
+
+                except Exception as e:
+                    logging.error(f"Row {row} error: {str(e)}")
+                    sheet.update_cell(row, 8, f"ERROR: {str(e)}")
             
             browser.close()
 
@@ -210,4 +153,12 @@ def main():
             os.remove(CONFIG["CREDS_FILE"])
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler("parser.log"),
+            logging.StreamHandler()
+        ]
+    )
     main()
