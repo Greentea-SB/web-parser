@@ -1,8 +1,9 @@
+# .github/workflows/parser.yml
 name: Advanced Parser
 
 on:
- # schedule:
-   # - cron: '0 */6 * * *'
+  schedule:
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -25,7 +26,7 @@ jobs:
           playwright install --with-deps chromium
           
       - name: Run Parser
-        timeout-minutes: 390  # Увеличенный лимит времени
+        timeout-minutes: 390
         run: |
           python main.py
           
@@ -34,5 +35,4 @@ jobs:
         if: always()
         with:
           name: parser-logs
-          path: |
-            debug.log
+          path: parser.log  # Исправлено имя файла
