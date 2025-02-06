@@ -25,7 +25,7 @@ jobs:
           playwright install --with-deps chromium
           
       - name: Run Parser
-        timeout-minutes: 120  # Увеличенный лимит времени
+        timeout-minutes: 390  # Увеличенный лимит времени
         run: |
           python main.py
           
