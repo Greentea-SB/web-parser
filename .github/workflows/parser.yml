@@ -3,7 +3,7 @@ name: Advanced Parser
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */40 * * *'
   workflow_dispatch:
 
 jobs:
