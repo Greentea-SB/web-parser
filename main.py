@@ -12,7 +12,7 @@ CONFIG = {
     "SHEET_NAME": "pars",
     "CREDS_FILE": "temp_key.json",
     "MAX_RETRIES": 3,         # Повторы при исключениях (например, ошибка загрузки)
-    "MAX_NA_RETRIES": 5,      # Повторы, если результат содержит только "N/A"
+    "MAX_NA_RETRIES": 5,      # Повторы, если результат содержит только ошибочные значения
     "REQUEST_DELAY": 5,
     "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
@@ -26,6 +26,17 @@ CONFIG = {
 
 def clean_numeric_values(data_list):
     return [item.strip().replace('+', '').replace(' ', '').replace('$', '').replace('€', '').replace('£', '') for item in data_list]
+
+def is_valid_result(result):
+    """
+    Считаем результат корректным, если для каждого столбца значение не входит в список ошибок.
+    """
+    error_markers = {"N/A", "--%", "0%", "0"}
+    for col in CONFIG["TARGET_CLASSES"]:
+        # Если отсутствует значение или первое значение является ошибочным, возвращаем False
+        if not result.get(col) or result[col][0] in error_markers:
+            return False
+    return True
 
 async def setup_browser():
     playwright = await async_playwright().start()
@@ -75,16 +86,15 @@ async def parse_data(url, browser, error_attempt=1):
 
 async def process_single_url(url, browser):
     """
-    Парсит один URL с повторными попытками, если данные не найдены.
-    Принимает до MAX_NA_RETRIES попыток.
+    Парсит один URL с повторными попытками, если данные не найдены или содержат ошибочные значения.
+    Пытаемся до MAX_NA_RETRIES раз.
     """
     for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
         result = await parse_data(url, browser)
-        # Если хотя бы для одной колонки данные отличаются от "N/A", считаем, что парсинг успешен
-        if not all(len(result[col]) == 1 and result[col][0] == "N/A" for col in CONFIG["TARGET_CLASSES"]):
+        if is_valid_result(result):
             return result
         await asyncio.sleep(CONFIG["REQUEST_DELAY"])
-    return result  # Если так и не удалось получить данные, результат будет "FAIL" или "N/A"
+    return result  # Вернёт FAIL или ошибочные данные, если так и не удалось получить корректный результат
 
 async def process_urls(urls, browser):
     tasks = [process_single_url(url, browser) for url in urls]
