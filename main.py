@@ -18,7 +18,7 @@ CONFIG = {
     "REQUEST_DELAY": 15,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
-    "BLOCK_SIZE": 5,
+    "BLOCK_SIZE": 1,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
