@@ -102,7 +102,12 @@ def main():
 
                 results = process_block(urls, browser)
                 
-                sheet.update(f'D{start}:F{start + len(results) - 1}', results, value_input_option='USER_ENTERED')
+               sheet.update(
+    range_name=f'D{start}:F{start + len(results) - 1}', 
+    values=results, 
+    value_input_option='USER_ENTERED'
+)
+
                 time.sleep(random.uniform(5, 10))  # Даем передышку API Google Sheets
 
             browser.close()
