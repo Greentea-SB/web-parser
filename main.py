@@ -20,7 +20,7 @@ CONFIG = {
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
-      'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
+        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     }
@@ -40,35 +40,38 @@ async def setup_browser():
     ])
     return browser, playwright
 
-async def parse_data(url, browser):
-    """Парсинг одной страницы с асинхронными запросами"""
-    for attempt in range(CONFIG["MAX_RETRIES"]):
-        page = await browser.new_page()
-        try:
-            await page.goto(url, wait_until="domcontentloaded")
-            await asyncio.sleep(random.uniform(1.0, 2.5))
+async def parse_data(url, browser, attempt=1):
+    """Парсинг одной страницы с обработкой N/A"""
+    page = await browser.new_page()
+    try:
+        await page.goto(url, wait_until="domcontentloaded")
+        await asyncio.sleep(random.uniform(1.0, 2.5))
 
-            results = {col: ["N/A"] for col in CONFIG["TARGET_CLASSES"]}
-            for col, selectors in CONFIG["TARGET_CLASSES"].items():
-                for selector in selectors:
-                    try:
-                        await page.wait_for_selector(f'.{selector}', timeout=5000)
-                        elements = await page.query_selector_all(f'.{selector}')
-                        if elements:
-                            results[col] = [await el.inner_text() for el in elements]
-                            break
-                    except:
-                        pass
+        results = {col: ["N/A"] for col in CONFIG["TARGET_CLASSES"]}
+        for col, selectors in CONFIG["TARGET_CLASSES"].items():
+            for selector in selectors:
+                try:
+                    await page.wait_for_selector(f'.{selector}', timeout=5000)
+                    elements = await page.query_selector_all(f'.{selector}')
+                    if elements:
+                        results[col] = [await el.inner_text() for el in elements]
+                        break
+                except:
+                    pass
 
-            # Проверяем, если все данные "N/A", то это неудачный парсинг
-            if all(len(results[col]) == 1 and results[col][0] == "N/A" for col in CONFIG["TARGET_CLASSES"]):
-                raise Exception("Page data not found")
-            
-            return results
-        except:
-            await asyncio.sleep(CONFIG["REQUEST_DELAY"] * (attempt + 1))
-        finally:
-            await page.close()
+        # Если все данные "N/A", пробуем еще раз (до MAX_NA_RETRIES)
+        if all(len(results[col]) == 1 and results[col][0] == "N/A" for col in CONFIG["TARGET_CLASSES"]):
+            if attempt < CONFIG["MAX_NA_RETRIES"]:
+                await asyncio.sleep(CONFIG["REQUEST_DELAY"])
+                return await parse_data(url, browser, attempt + 1)
+            else:
+                return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
+
+        return results
+    except:
+        await asyncio.sleep(CONFIG["REQUEST_DELAY"] * attempt)
+    finally:
+        await page.close()
 
     return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
 
@@ -77,27 +80,27 @@ async def process_urls(urls, browser):
     tasks = [parse_data(url, browser) for url in urls]
     return await asyncio.gather(*tasks)
 
-async def retry_failed_urls(failed_urls, browser, max_retries):
+async def retry_failed_urls(failed_urls, browser):
     """Повторный парсинг только неудачных страниц"""
     retries = {url: 0 for url in failed_urls}
-    
-    while failed_urls and max(retries.values()) < max_retries:
+
+    while failed_urls:
         logging.info(f"Retrying {len(failed_urls)} failed URLs...")
-        tasks = [parse_data(url, browser) for url in failed_urls]
+        tasks = [parse_data(url, browser, attempt=retries[url] + 1) for url in failed_urls]
         new_results = await asyncio.gather(*tasks)
-        
+
         updated_failed_urls = []
         for i, url in enumerate(failed_urls):
             result = new_results[i]
             if all(len(result[col]) == 1 and result[col][0] in ["N/A", "FAIL"] for col in CONFIG["TARGET_CLASSES"]):
                 retries[url] += 1
-                if retries[url] < max_retries:
+                if retries[url] < CONFIG["MAX_NA_RETRIES"]:
                     updated_failed_urls.append(url)
             else:
                 failed_urls.remove(url)
 
         failed_urls = updated_failed_urls
-        await asyncio.sleep(CONFIG["REQUEST_DELAY"])  # Задержка перед повтором
+        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
 
     return failed_urls
 
@@ -136,7 +139,7 @@ async def main():
             )]
 
             if failed_urls:
-                failed_urls = await retry_failed_urls(failed_urls, browser, CONFIG["MAX_NA_RETRIES"])
+                failed_urls = await retry_failed_urls(failed_urls, browser)
 
             # Подготовка данных для записи в Google Sheets
             values = [
