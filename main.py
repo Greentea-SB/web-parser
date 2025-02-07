@@ -15,12 +15,12 @@ CONFIG = {
     "CREDS_FILE": "temp_key.json",
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 10,  # Уменьшили задержку
-    "MAX_CONCURRENT_PAGES": 10,  # Количество вкладок в браузере
+    "REQUEST_DELAY": 5,
+    "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
-        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
+      'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     }
@@ -30,7 +30,6 @@ def clean_numeric_values(data_list):
     return [item.strip().replace('+', '').replace(' ', '').replace('$', '').replace('€', '').replace('£', '') for item in data_list]
 
 async def setup_browser():
-    """Запуск браузера в headless режиме"""
     playwright = await async_playwright().start()
     browser = await playwright.chromium.launch(headless=True, args=[
         '--no-sandbox',
@@ -47,13 +46,13 @@ async def parse_data(url, browser):
         page = await browser.new_page()
         try:
             await page.goto(url, wait_until="domcontentloaded")
-            await asyncio.sleep(random.uniform(1.0, 2.5))  # Случайная задержка
+            await asyncio.sleep(random.uniform(1.0, 2.5))
 
             results = {col: ["N/A"] for col in CONFIG["TARGET_CLASSES"]}
             for col, selectors in CONFIG["TARGET_CLASSES"].items():
                 for selector in selectors:
                     try:
-                        await page.wait_for_selector(f'.{selector}', timeout=10000)
+                        await page.wait_for_selector(f'.{selector}', timeout=5000)
                         elements = await page.query_selector_all(f'.{selector}')
                         if elements:
                             results[col] = [await el.inner_text() for el in elements]
@@ -61,18 +60,46 @@ async def parse_data(url, browser):
                     except:
                         pass
 
+            # Проверяем, если все данные "N/A", то это неудачный парсинг
+            if all(len(results[col]) == 1 and results[col][0] == "N/A" for col in CONFIG["TARGET_CLASSES"]):
+                raise Exception("Page data not found")
+            
             return results
         except:
             await asyncio.sleep(CONFIG["REQUEST_DELAY"] * (attempt + 1))
         finally:
             await page.close()
-    
+
     return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
 
 async def process_urls(urls, browser):
-    """Обрабатываем список URL асинхронно"""
+    """Асинхронный парсинг группы URL"""
     tasks = [parse_data(url, browser) for url in urls]
     return await asyncio.gather(*tasks)
+
+async def retry_failed_urls(failed_urls, browser, max_retries):
+    """Повторный парсинг только неудачных страниц"""
+    retries = {url: 0 for url in failed_urls}
+    
+    while failed_urls and max(retries.values()) < max_retries:
+        logging.info(f"Retrying {len(failed_urls)} failed URLs...")
+        tasks = [parse_data(url, browser) for url in failed_urls]
+        new_results = await asyncio.gather(*tasks)
+        
+        updated_failed_urls = []
+        for i, url in enumerate(failed_urls):
+            result = new_results[i]
+            if all(len(result[col]) == 1 and result[col][0] in ["N/A", "FAIL"] for col in CONFIG["TARGET_CLASSES"]):
+                retries[url] += 1
+                if retries[url] < max_retries:
+                    updated_failed_urls.append(url)
+            else:
+                failed_urls.remove(url)
+
+        failed_urls = updated_failed_urls
+        await asyncio.sleep(CONFIG["REQUEST_DELAY"])  # Задержка перед повтором
+
+    return failed_urls
 
 async def main():
     """Основная асинхронная функция"""
@@ -103,6 +130,14 @@ async def main():
             # Парсим сразу `MAX_CONCURRENT_PAGES` страниц параллельно
             results_list = await process_urls(urls, browser)
 
+            # Отфильтруем неудачные страницы
+            failed_urls = [urls[j] for j, res in enumerate(results_list) if all(
+                len(res[col]) == 1 and res[col][0] in ["N/A", "FAIL"] for col in CONFIG["TARGET_CLASSES"]
+            )]
+
+            if failed_urls:
+                failed_urls = await retry_failed_urls(failed_urls, browser, CONFIG["MAX_NA_RETRIES"])
+
             # Подготовка данных для записи в Google Sheets
             values = [
                 [
@@ -114,7 +149,7 @@ async def main():
             ]
             sheet.update(range_name=f'D{start}:F{start + len(values) - 1}', values=values, value_input_option='USER_ENTERED')
 
-            await asyncio.sleep(random.uniform(5, 10))  # Короткий перерыв между блоками
+            await asyncio.sleep(random.uniform(3, 7))
 
         # Закрываем браузер
         await browser.close()
