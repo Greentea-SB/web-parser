@@ -15,7 +15,7 @@ CONFIG = {
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 15,
-    "BLOCK_SIZE": 25,
+    "BLOCK_SIZE": 3,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
