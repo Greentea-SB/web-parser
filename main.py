@@ -85,7 +85,7 @@ async def parse_data(url, browser):
             return results
 
         except Exception as e:
-            logging.error(f"Attempt {attempt+1} failed: {str(e)}")
+            logging.error(f"Attempt {attempt + 1} failed: {str(e)}")
             await asyncio.sleep(CONFIG["REQUEST_DELAY"] * (attempt + 1))
         finally:
             if page:
@@ -101,7 +101,7 @@ async def process_row_data(url, browser):
         result = await parse_data(url, browser)
         if not has_na_values(result):
             return result
-        logging.warning(f"NA retry {na_attempt+1}")
+        logging.warning(f"NA retry {na_attempt + 1}")
         await asyncio.sleep(CONFIG["REQUEST_DELAY"] * (na_attempt + 1))
     return result
 
