@@ -63,6 +63,9 @@ async def parse_data(url, browser):
         page = None
         try:
             page = await browser.new_page()
+            if page is None:
+                raise ValueError("Page could not be created.")
+            
             await page.set_default_timeout(60000)
             await page.goto(url, wait_until="domcontentloaded")
             await human_like_delay(page)
