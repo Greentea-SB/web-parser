@@ -15,7 +15,7 @@ CONFIG = {
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 5,
-    "MAX_CONCURRENT_PAGES": 25,
+    "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "ERROR_VALUES": {"0", "--%", "0%", "N/A", "FAIL"},
@@ -175,7 +175,7 @@ async def main():
         # Обработка блоками
         for i in range(0, len(valid_urls), CONFIG["MAX_CONCURRENT_PAGES"]):
             batch = valid_urls[i:i + CONFIG["MAX_CONCURRENT_PAGES"]]
-            logging.info(f"Обработка блока {i//CONFIG["MAX_CONCURRENT_PAGES"] + 1}")
+            logging.info(f"Обработка блока {i//CONFIG['MAX_CONCURRENT_PAGES'] + 1}")
             
             results = await process_batch(batch, browser)
             
