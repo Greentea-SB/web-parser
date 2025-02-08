@@ -26,14 +26,27 @@ CONFIG = {
     }
 }
 
-# Настройка логгера
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler("parser.log"), logging.StreamHandler()]
-)
+def setup_logging():
+    """Настройка системы логирования"""
+    log_file = "parser.log"
+    
+    if not os.path.exists(log_file):
+        open(log_file, 'a').close()
+    
+    if os.name != 'nt':
+        os.chmod(log_file, 0o644)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
 
 def clean_numeric_values(data_list):
+    """Очистка числовых значений от нежелательных символов"""
     return [
         item.strip()
         .replace('+', '')
@@ -45,6 +58,7 @@ def clean_numeric_values(data_list):
     ]
 
 async def setup_browser():
+    """Инициализация браузера Playwright"""
     playwright = await async_playwright().start()
     browser = await playwright.chromium.launch(
         headless=True,
@@ -59,9 +73,11 @@ async def setup_browser():
     return browser, playwright
 
 def is_error_value(value):
+    """Проверка на ошибочные значения"""
     return any(err in value for err in CONFIG["ERROR_VALUES"])
 
 async def parse_url(url, browser, attempt=1):
+    """Парсинг URL с обработкой ошибок"""
     page = None
     try:
         page = await browser.new_page()
@@ -94,10 +110,11 @@ async def parse_url(url, browser, attempt=1):
             await page.close()
 
 async def process_batch(batch, browser):
+    """Обработка пакета URL с повторными попытками"""
     tasks = []
     url_map = {}
     
-    # Первоначальная обработка
+    # Первичная обработка
     for row, url in batch:
         task = asyncio.create_task(parse_url(url, browser))
         tasks.append(task)
@@ -105,7 +122,7 @@ async def process_batch(batch, browser):
     
     results = await asyncio.gather(*tasks)
     
-    # Сбор неудачных результатов
+    # Сбор неудачных результатов для повторной обработки
     retry_tasks = []
     retry_map = {}
     for task, (row, url) in url_map.items():
@@ -115,7 +132,7 @@ async def process_batch(batch, browser):
             retry_tasks.append(retry_task)
             retry_map[retry_task] = (row, url)
     
-    # Повторная обработка неудачных
+    # Повторная обработка
     if retry_tasks:
         retry_results = await asyncio.gather(*retry_tasks)
         for retry_task, (row, url) in retry_map.items():
@@ -130,6 +147,7 @@ async def process_batch(batch, browser):
     return final_results
 
 async def update_sheet(sheet, updates):
+    """Пакетное обновление Google Sheets"""
     if not updates:
         return
     
@@ -146,7 +164,10 @@ async def update_sheet(sheet, updates):
         logging.error(f"Ошибка обновления таблицы: {str(e)}")
 
 async def main():
+    """Основная функция выполнения"""
     try:
+        setup_logging()
+        
         # Инициализация Google Sheets
         encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
         if not encoded_creds:
@@ -158,21 +179,23 @@ async def main():
         gc = gspread.authorize(
             ServiceAccountCredentials.from_json_keyfile_name(
                 CONFIG["CREDS_FILE"],
-                ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+                ['https://spreadsheets.google.com/feeds', 
+                 'https://www.googleapis.com/auth/drive']
             )
         )
         sheet = gc.open_by_key(CONFIG["SPREADSHEET_ID"]).worksheet(CONFIG["SHEET_NAME"])
         
-        # Получение всех URL
+        # Получение и фильтрация URL
         all_urls = [
             (CONFIG["START_ROW"] + i, sheet.cell(CONFIG["START_ROW"] + i, 3).value)
             for i in range(CONFIG["TOTAL_URLS"])
         ]
         valid_urls = [(row, url) for row, url in all_urls if url and url.startswith('http')]
         
+        # Инициализация браузера
         browser, playwright = await setup_browser()
         
-        # Обработка блоками
+        # Пакетная обработка
         for i in range(0, len(valid_urls), CONFIG["MAX_CONCURRENT_PAGES"]):
             batch = valid_urls[i:i + CONFIG["MAX_CONCURRENT_PAGES"]]
             logging.info(f"Обработка блока {i//CONFIG['MAX_CONCURRENT_PAGES'] + 1}")
@@ -182,22 +205,25 @@ async def main():
             # Подготовка данных для обновления
             updates = {}
             for row, result in results:
-                col_d = ', '.join(clean_numeric_values(result['col_d'][:3]))
-                col_e = ', '.join(clean_numeric_values(result['col_e'][:3]))
-                col_f = ', '.join(clean_numeric_values(result['col_f'][:3]))
-                
-                if not any(is_error_value(v) for v in [col_d, col_e, col_f]):
-                    updates[row] = [col_d, col_e, col_f]
+                try:
+                    col_d = ', '.join(clean_numeric_values(result['col_d'][:3]))
+                    col_e = ', '.join(clean_numeric_values(result['col_e'][:3]))
+                    col_f = ', '.join(clean_numeric_values(result['col_f'][:3]))
+                    
+                    if not any(is_error_value(v) for v in [col_d, col_e, col_f]):
+                        updates[row] = [col_d, col_e, col_f]
+                except Exception as e:
+                    logging.error(f"Ошибка обработки результатов для ряда {row}: {str(e)}")
             
-            # Пакетное обновление
+            # Обновление таблицы
             await update_sheet(sheet, updates)
-            await asyncio.sleep(random.randint(5, 10))
+            await asyncio.sleep(random.randint(5, 15))
         
         await browser.close()
         await playwright.stop()
         
     except Exception as e:
-        logging.critical(f"Critical error: {str(e)}")
+        logging.critical(f"Критическая ошибка: {str(e)}")
     finally:
         if os.path.exists(CONFIG["CREDS_FILE"]):
             os.remove(CONFIG["CREDS_FILE"])
