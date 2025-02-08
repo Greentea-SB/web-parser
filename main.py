@@ -18,11 +18,7 @@ CONFIG = {
     "REQUEST_DELAY": 15,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
-    "TARGET_CLASSES": {
-        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
-        'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
-        'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
-    }
+    "NUM_PROCESSES": 10  # количество параллельно работающих скриптов
 }
 
 def clean_numeric_values(data_list):
@@ -154,7 +150,7 @@ def process_urls(start_index, end_index):
             os.remove(CONFIG["CREDS_FILE"])
 
 def main():
-    num_processes = 10
+    num_processes = CONFIG["NUM_PROCESSES"]
     urls_per_process = CONFIG["TOTAL_URLS"] // num_processes
 
     processes = []
