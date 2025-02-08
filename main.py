@@ -40,7 +40,7 @@ def clean_numeric_values(data_list):
     return cleaned
 
 async def setup_browser(playwright):
-    return await playwright.chromium.launch(
+    browser = await playwright.chromium.launch(
         headless=True,
         args=[
             '--no-sandbox',
@@ -50,6 +50,9 @@ async def setup_browser(playwright):
             '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         ]
     )
+    if browser is None:
+        raise ValueError("Browser could not be launched.")
+    return browser
 
 async def human_like_delay(page):
     await asyncio.sleep(random.uniform(1.5, 4.5))
