@@ -2,7 +2,7 @@ name: Advanced Parser
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 8,20 * * *'  # Запуск в 08:00 и 20:00 UTC
   workflow_dispatch:
 
 jobs:
@@ -11,6 +11,7 @@ jobs:
     timeout-minutes: 360
     env:
       GOOGLE_CREDENTIALS_BASE64: ${{ secrets.GOOGLE_CREDENTIALS_BASE64 }}
+      PYTHONUNBUFFERED: 1
       
     steps:
       - uses: actions/checkout@v4
