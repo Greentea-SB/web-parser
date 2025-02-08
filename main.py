@@ -18,7 +18,6 @@ CONFIG = {
     "REQUEST_DELAY": 15,
     "START_ROW": 14,
     "TOTAL_URLS": 113,
-    "NUM_PROCESSES": 25,  # количество параллельно работающих скриптов
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
@@ -59,11 +58,6 @@ def human_like_delay(page):
         random.randint(0, 500)
     )
 
-def wait_for_data(page):
-    timeout = CONFIG["MAX_RETRIES"] * 60000  # Увеличиваем таймаут до общего времени всех попыток
-    for selector in CONFIG['TARGET_CLASSES']['col_d'] + CONFIG['TARGET_CLASSES']['col_e'] + CONFIG['TARGET_CLASSES']['col_f']:
-        page.wait_for_function(f"() => document.querySelectorAll('.{selector}').length > 0", timeout=timeout)
-
 def parse_data(url, browser):
     for attempt in range(CONFIG["MAX_RETRIES"]):
         page = None
@@ -72,13 +66,13 @@ def parse_data(url, browser):
             page.set_default_timeout(60000)
             page.goto(url, wait_until="domcontentloaded")
             human_like_delay(page)
-            wait_for_data(page)
             
             results = {}
             for col, selectors in CONFIG["TARGET_CLASSES"].items():
                 results[col] = ["N/A"]
                 for selector in selectors:
                     try:
+                        page.wait_for_selector(f'.{selector}', timeout=15000)
                         elements = page.query_selector_all(f'.{selector}')
                         if elements:
                             results[col] = [el.inner_text().strip() for el in elements]
@@ -99,15 +93,12 @@ def parse_data(url, browser):
 def has_na_values(result):
     return any("N/A" in values for values in result.values())
 
-def has_zero_values(result):
-    return any("0" in values for values in result.values())
-
 def process_row_data(url, browser):
     for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
         result = parse_data(url, browser)
-        if not has_na_values(result) and not has_zero_values(result):
+        if not has_na_values(result):
             return result
-        logging.warning(f"NA or zero retry {na_attempt+1}")
+        logging.warning(f"NA retry {na_attempt+1}")
         time.sleep(CONFIG["REQUEST_DELAY"] * (na_attempt + 1))
     return result
 
@@ -163,7 +154,8 @@ def process_urls(start_index, end_index):
             os.remove(CONFIG["CREDS_FILE"])
 
 def main():
-    num_processes = CONFIG["NUM_PROCESSES"]
+    # Set the number of processes to run in parallel
+    num_processes = 25
     urls_per_process = CONFIG["TOTAL_URLS"] // num_processes
 
     processes = []
