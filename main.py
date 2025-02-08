@@ -198,7 +198,7 @@ async def main():
     """Основная функция выполнения"""
     setup_logging()
     sheets = GoogleSheetsManager()
-    browser, playwright = None, None
+    #browser, playwright = None, None
     
     try:
         # Инициализация подключений
