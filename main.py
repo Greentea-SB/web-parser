@@ -59,6 +59,10 @@ def human_like_delay(page):
         random.randint(0, 500)
     )
 
+def wait_for_data(page):
+    for selector in CONFIG['TARGET_CLASSES']['col_d'] + CONFIG['TARGET_CLASSES']['col_e'] + CONFIG['TARGET_CLASSES']['col_f']:
+        page.wait_for_function(f"() => document.querySelectorAll('.{selector}').length > 0")
+
 def parse_data(url, browser):
     for attempt in range(CONFIG["MAX_RETRIES"]):
         page = None
@@ -67,13 +71,13 @@ def parse_data(url, browser):
             page.set_default_timeout(60000)
             page.goto(url, wait_until="domcontentloaded")
             human_like_delay(page)
+            wait_for_data(page)
             
             results = {}
             for col, selectors in CONFIG["TARGET_CLASSES"].items():
                 results[col] = ["N/A"]
                 for selector in selectors:
                     try:
-                        page.wait_for_selector(f'.{selector}', timeout=15000)
                         elements = page.query_selector_all(f'.{selector}')
                         if elements:
                             results[col] = [el.inner_text().strip() for el in elements]
