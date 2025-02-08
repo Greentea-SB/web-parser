@@ -17,7 +17,7 @@ CONFIG = {
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 15,
     "START_ROW": 14,
-    "TOTAL_URLS": 260,
+    "TOTAL_URLS": 113,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
@@ -155,7 +155,7 @@ def process_urls(start_index, end_index):
 
 def main():
     # Set the number of processes to run in parallel
-    num_processes = 10
+    num_processes = 25
     urls_per_process = CONFIG["TOTAL_URLS"] // num_processes
 
     processes = []
