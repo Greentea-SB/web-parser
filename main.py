@@ -60,8 +60,9 @@ def human_like_delay(page):
     )
 
 def wait_for_data(page):
+    timeout = CONFIG["MAX_RETRIES"] * 60000  # Увеличиваем таймаут до общего времени всех попыток
     for selector in CONFIG['TARGET_CLASSES']['col_d'] + CONFIG['TARGET_CLASSES']['col_e'] + CONFIG['TARGET_CLASSES']['col_f']:
-        page.wait_for_function(f"() => document.querySelectorAll('.{selector}').length > 0")
+        page.wait_for_function(f"() => document.querySelectorAll('.{selector}').length > 0", timeout=timeout)
 
 def parse_data(url, browser):
     for attempt in range(CONFIG["MAX_RETRIES"]):
