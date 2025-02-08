@@ -14,7 +14,7 @@ CONFIG = {
     "MAX_RETRIES": 3,         # Повторы при исключениях (например, ошибка загрузки)
     "MAX_NA_RETRIES": 5,      # Повторы, если результат содержит только ошибочные значения
     "REQUEST_DELAY": 5,
-    "MAX_CONCURRENT_PAGES": 25,
+    "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
