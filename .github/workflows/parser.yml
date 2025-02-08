@@ -2,12 +2,13 @@ name: Advanced Parser
 
 on:
   schedule:
-    - cron: '0 8 * * *'  # Новое расписание: ежедневно в 08:00 UTC
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 jobs:
   parse:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     env:
       GOOGLE_CREDENTIALS_BASE64: ${{ secrets.GOOGLE_CREDENTIALS_BASE64 }}
       
@@ -21,17 +22,15 @@ jobs:
           
       - name: Install dependencies
         run: |
-          pip install playwright gspread oauth2client
+          pip install playwright gspread oauth2client google-api-python-client
           playwright install --with-deps chromium
           
       - name: Run Parser
-        timeout-minutes: 390
-        run: |
-          python main.py
-          
+        run: python main.py
+        
       - name: Upload Logs
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: parser-logs
-          path: debug.log
+          path: parser.log
