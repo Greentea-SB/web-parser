@@ -18,6 +18,7 @@ CONFIG = {
     "REQUEST_DELAY": 15,
     "START_ROW": 14,
     "TOTAL_URLS": 113,
+    "NUM_PROCESSES": 25,  # количество параллельно работающих скриптов
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
@@ -93,12 +94,15 @@ def parse_data(url, browser):
 def has_na_values(result):
     return any("N/A" in values for values in result.values())
 
+def has_zero_values(result):
+    return any("0" in values for values in result.values())
+
 def process_row_data(url, browser):
     for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
         result = parse_data(url, browser)
-        if not has_na_values(result):
+        if not has_na_values(result) and not has_zero_values(result):
             return result
-        logging.warning(f"NA retry {na_attempt+1}")
+        logging.warning(f"NA or zero retry {na_attempt+1}")
         time.sleep(CONFIG["REQUEST_DELAY"] * (na_attempt + 1))
     return result
 
@@ -154,8 +158,7 @@ def process_urls(start_index, end_index):
             os.remove(CONFIG["CREDS_FILE"])
 
 def main():
-    # Set the number of processes to run in parallel
-    num_processes = 25
+    num_processes = CONFIG["NUM_PROCESSES"]
     urls_per_process = CONFIG["TOTAL_URLS"] // num_processes
 
     processes = []
