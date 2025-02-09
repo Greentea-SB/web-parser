@@ -13,16 +13,17 @@ CONFIG = {
     "SPREADSHEET_ID": "1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE",
     "SHEET_NAME": "pars",
     "CREDS_FILE": "temp_key.json",
-    "MAX_RETRIES": 5,
-    "MAX_NA_RETRIES": 7,
-    "REQUEST_DELAY": 20,
+    "MAX_RETRIES": 3,
+    "MAX_NA_RETRIES": 5,
+    "REQUEST_DELAY": 15,
     "START_ROW": 14,
     "TOTAL_URLS": 113,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
-    }
+    },
+    "MAX_ZERO_RETRIES": 3
 }
 
 def clean_numeric_values(data_list):
@@ -52,7 +53,7 @@ def setup_browser(playwright):
     )
 
 def human_like_delay(page):
-    time.sleep(random.uniform(3.5, 7.5))
+    time.sleep(random.uniform(1.5, 4.5))
     page.mouse.move(
         random.randint(0, 500),
         random.randint(0, 500)
@@ -63,7 +64,7 @@ def parse_data(url, browser):
         page = None
         try:
             page = browser.new_page()
-            page.set_default_timeout(90000)
+            page.set_default_timeout(60000)
             page.goto(url, wait_until="domcontentloaded")
             human_like_delay(page)
             
@@ -72,7 +73,7 @@ def parse_data(url, browser):
                 results[col] = ["N/A"]
                 for selector in selectors:
                     try:
-                        page.wait_for_selector(f'.{selector}', timeout=20000)
+                        page.wait_for_selector(f'.{selector}', timeout=15000)
                         elements = page.query_selector_all(f'.{selector}')
                         if elements:
                             results[col] = [el.inner_text().strip() for el in elements]
@@ -93,10 +94,19 @@ def parse_data(url, browser):
 def has_na_values(result):
     return any("N/A" in values for values in result.values())
 
+def has_zero_values(result):
+    return any("0" in values for values in result.values())
+
 def process_row_data(url, browser):
     for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
         result = parse_data(url, browser)
         if not has_na_values(result):
+            for zero_attempt in range(CONFIG["MAX_ZERO_RETRIES"]):
+                if not has_zero_values(result):
+                    return result
+                logging.warning(f"Zero value retry {zero_attempt+1}")
+                time.sleep(CONFIG["REQUEST_DELAY"] * (zero_attempt + 1))
+                result = parse_data(url, browser)
             return result
         logging.warning(f"NA retry {na_attempt+1}")
         time.sleep(CONFIG["REQUEST_DELAY"] * (na_attempt + 1))
@@ -139,7 +149,7 @@ def process_urls(start_index, end_index):
                         value_input_option='USER_ENTERED'
                     )
                     
-                    time.sleep(random.uniform(4.5, 9.5))
+                    time.sleep(random.uniform(2.5, 7.5))
 
                 except Exception as e:
                     logging.error(f"Row {row} error: {str(e)}")
