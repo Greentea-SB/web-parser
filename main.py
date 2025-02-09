@@ -90,15 +90,15 @@ def parse_data(url, browser):
     
     return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
 
-def has_na_or_zero_values(result):
-    return any("N/A" in values or "0" in values for values in result.values())
+def has_na_values(result):
+    return any("N/A" in values for values in result.values())
 
 def process_row_data(url, browser):
     for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
         result = parse_data(url, browser)
-        if not has_na_or_zero_values(result):
+        if not has_na_values(result):
             return result
-        logging.warning(f"NA or Zero retry {na_attempt+1}")
+        logging.warning(f"NA retry {na_attempt+1}")
         time.sleep(CONFIG["REQUEST_DELAY"] * (na_attempt + 1))
     return result
 
@@ -139,13 +139,11 @@ def process_urls(start_index, end_index):
                         value_input_option='USER_ENTERED'
                     )
                     
-                    time.sleep(random.uniform(2.5, 7.5))  # Delay between each row processing
+                    time.sleep(random.uniform(2.5, 7.5))
 
                 except Exception as e:
                     logging.error(f"Row {row} error: {str(e)}")
                     sheet.update_cell(row, 8, f"ERROR: {str(e)}")
-                finally:
-                    time.sleep(2)  # Add a delay between each script execution
             
             browser.close()
 
@@ -157,7 +155,7 @@ def process_urls(start_index, end_index):
 
 def main():
     # Set the number of processes to run in parallel
-    num_processes = 25
+    num_processes = 10
     urls_per_process = CONFIG["TOTAL_URLS"] // num_processes
 
     processes = []
@@ -167,7 +165,6 @@ def main():
         p = multiprocessing.Process(target=process_urls, args=(start_index, end_index))
         processes.append(p)
         p.start()
-        time.sleep(2)  # Add a delay between each process start
 
     for p in processes:
         p.join()
