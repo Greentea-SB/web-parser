@@ -13,9 +13,9 @@ CONFIG = {
     "SPREADSHEET_ID": "1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE",
     "SHEET_NAME": "pars",
     "CREDS_FILE": "temp_key.json",
-    "MAX_RETRIES": 3,
-    "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 15,
+    "MAX_RETRIES": 5,
+    "MAX_NA_RETRIES": 7,
+    "REQUEST_DELAY": 20,
     "START_ROW": 14,
     "TOTAL_URLS": 113,
     "TARGET_CLASSES": {
@@ -52,7 +52,7 @@ def setup_browser(playwright):
     )
 
 def human_like_delay(page):
-    time.sleep(random.uniform(1.5, 4.5))
+    time.sleep(random.uniform(3.5, 7.5))
     page.mouse.move(
         random.randint(0, 500),
         random.randint(0, 500)
@@ -63,7 +63,7 @@ def parse_data(url, browser):
         page = None
         try:
             page = browser.new_page()
-            page.set_default_timeout(60000)
+            page.set_default_timeout(90000)
             page.goto(url, wait_until="domcontentloaded")
             human_like_delay(page)
             
@@ -72,7 +72,7 @@ def parse_data(url, browser):
                 results[col] = ["N/A"]
                 for selector in selectors:
                     try:
-                        page.wait_for_selector(f'.{selector}', timeout=15000)
+                        page.wait_for_selector(f'.{selector}', timeout=20000)
                         elements = page.query_selector_all(f'.{selector}')
                         if elements:
                             results[col] = [el.inner_text().strip() for el in elements]
@@ -139,7 +139,7 @@ def process_urls(start_index, end_index):
                         value_input_option='USER_ENTERED'
                     )
                     
-                    time.sleep(random.uniform(2.5, 7.5))
+                    time.sleep(random.uniform(4.5, 9.5))
 
                 except Exception as e:
                     logging.error(f"Row {row} error: {str(e)}")
