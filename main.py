@@ -1,23 +1,22 @@
+import asyncio
 import base64
 import gspread
 import logging
-import time
-import random
 import os
-import multiprocessing
-from datetime import datetime
+import random
+from playwright.async_api import async_playwright
 from oauth2client.service_account import ServiceAccountCredentials
-from playwright.sync_api import sync_playwright
 
 CONFIG = {
     "SPREADSHEET_ID": "1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE",
     "SHEET_NAME": "pars",
     "CREDS_FILE": "temp_key.json",
-    "MAX_RETRIES": 3,
-    "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 15,
+    "MAX_RETRIES": 3,         # Повторы при исключениях (например, ошибка загрузки)
+    "MAX_NA_RETRIES": 5,      # Повторы, если результат содержит только ошибочные значения
+    "REQUEST_DELAY": 5,
+    "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
-    "TOTAL_URLS": 513,
+    "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
@@ -26,21 +25,22 @@ CONFIG = {
 }
 
 def clean_numeric_values(data_list):
-    cleaned = []
-    for item in data_list:
-        processed = (
-            item.strip()
-            .replace('+', '')
-            .replace(' ', '')
-            .replace('$', '')
-            .replace('€', '')
-            .replace('£', '')
-        )
-        cleaned.append(processed)
-    return cleaned
+    return [item.strip().replace('+', '').replace(' ', '').replace('$', '').replace('€', '').replace('£', '') for item in data_list]
 
-def setup_browser(playwright):
-    return playwright.chromium.launch(
+def is_valid_result(result):
+    """
+    Считаем результат корректным, если для каждого столбца значение не входит в список ошибок.
+    """
+    error_markers = {"N/A", "--%", "0%", "0"}
+    for col in CONFIG["TARGET_CLASSES"]:
+        # Если отсутствует значение или первое значение является ошибочным, возвращаем False
+        if not result.get(col) or result[col][0] in error_markers:
+            return False
+    return True
+
+async def setup_browser():
+    playwright = await async_playwright().start()
+    browser = await playwright.chromium.launch(
         headless=True,
         args=[
             '--no-sandbox',
@@ -50,132 +50,114 @@ def setup_browser(playwright):
             '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         ]
     )
+    return browser, playwright
 
-def human_like_delay(page):
-    time.sleep(random.uniform(1.5, 4.5))
-    page.mouse.move(
-        random.randint(0, 500),
-        random.randint(0, 500)
-    )
-
-def parse_data(url, browser):
-    for attempt in range(CONFIG["MAX_RETRIES"]):
-        page = None
-        try:
-            page = browser.new_page()
-            page.set_default_timeout(60000)
-            page.goto(url, wait_until="domcontentloaded")
-            human_like_delay(page)
-            
-            results = {}
-            for col, selectors in CONFIG["TARGET_CLASSES"].items():
-                results[col] = ["N/A"]
-                for selector in selectors:
-                    try:
-                        page.wait_for_selector(f'.{selector}', timeout=15000)
-                        elements = page.query_selector_all(f'.{selector}')
-                        if elements:
-                            results[col] = [el.inner_text().strip() for el in elements]
-                            break
-                    except Exception as e:
-                        logging.debug(f"Selector failed: {str(e)}")
-            return results
-
-        except Exception as e:
-            logging.error(f"Attempt {attempt+1} failed: {str(e)}")
-            time.sleep(CONFIG["REQUEST_DELAY"] * (attempt + 1))
-        finally:
-            if page:
-                page.close()
-    
-    return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
-
-def has_na_values(result):
-    return any("N/A" in values for values in result.values())
-
-def process_row_data(url, browser):
-    for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
-        result = parse_data(url, browser)
-        if not has_na_values(result):
-            return result
-        logging.warning(f"NA retry {na_attempt+1}")
-        time.sleep(CONFIG["REQUEST_DELAY"] * (na_attempt + 1))
-    return result
-
-def process_urls(start_index, end_index):
+async def parse_data(url, browser, error_attempt=1):
+    """
+    Пытаемся загрузить и распарсить данные с URL.
+    При исключении повторяем до MAX_RETRIES.
+    """
+    page = await browser.new_page()
     try:
+        await page.goto(url, wait_until="domcontentloaded")
+        await asyncio.sleep(random.uniform(1.0, 2.5))
+        
+        # Изначально для каждого столбца задаём значение "N/A"
+        results = {col: ["N/A"] for col in CONFIG["TARGET_CLASSES"]}
+        for col, selectors in CONFIG["TARGET_CLASSES"].items():
+            for selector in selectors:
+                try:
+                    await page.wait_for_selector(f'.{selector}', timeout=5000)
+                    elements = await page.query_selector_all(f'.{selector}')
+                    if elements:
+                        results[col] = [await el.inner_text() for el in elements]
+                        break  # Если нашли данные для данного столбца, переходим к следующему
+                except Exception:
+                    continue
+        return results
+    except Exception as e:
+        if error_attempt < CONFIG["MAX_RETRIES"]:
+            await asyncio.sleep(CONFIG["REQUEST_DELAY"] * error_attempt)
+            return await parse_data(url, browser, error_attempt + 1)
+        else:
+            return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
+    finally:
+        await page.close()
+
+async def process_single_url(url, browser):
+    """
+    Парсит один URL с повторными попытками, если данные не найдены или содержат ошибочные значения.
+    Пытаемся до MAX_NA_RETRIES раз.
+    """
+    for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
+        result = await parse_data(url, browser)
+        if is_valid_result(result):
+            return result
+        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
+    return result  # Вернёт FAIL или ошибочные данные, если так и не удалось получить корректный результат
+
+async def process_urls(urls, browser):
+    tasks = [process_single_url(url, browser) for url in urls]
+    return await asyncio.gather(*tasks)
+
+async def main():
+    try:
+        # Декодирование учетных данных Google
         encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
         if not encoded_creds:
             raise ValueError("GOOGLE_CREDENTIALS_BASE64 not set")
-
         with open(CONFIG["CREDS_FILE"], 'w') as f:
             f.write(base64.b64decode(encoded_creds).decode('utf-8'))
-
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        gc = gspread.authorize(ServiceAccountCredentials.from_json_keyfile_name(CONFIG["CREDS_FILE"], scope))
+        
+        # Авторизация и выбор листа в Google Sheets
+        gc = gspread.authorize(
+            ServiceAccountCredentials.from_json_keyfile_name(
+                CONFIG["CREDS_FILE"],
+                ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+            )
+        )
         sheet = gc.open_by_key(CONFIG["SPREADSHEET_ID"]).worksheet(CONFIG["SHEET_NAME"])
-
-        with sync_playwright() as playwright:
-            browser = setup_browser(playwright)
+        
+        browser, playwright = await setup_browser()
+        
+        # Обработка URL блоками по MAX_CONCURRENT_PAGES
+        for i in range(0, CONFIG["TOTAL_URLS"], CONFIG["MAX_CONCURRENT_PAGES"]):
+            start = CONFIG["START_ROW"] + i
+            urls = [sheet.cell(start + j, 3).value for j in range(CONFIG["MAX_CONCURRENT_PAGES"])]
+            urls = [url for url in urls if url and url.startswith('http')]
+            if not urls:
+                continue
+                
+            results_list = await process_urls(urls, browser)
             
-            for i in range(start_index, end_index):
-                row = CONFIG["START_ROW"] + i
-                try:
-                    url = sheet.cell(row, 3).value
-                    if not url or not url.startswith('http'):
-                        continue
-                    
-                    result = process_row_data(url, browser)
-                    
-                    values = [
-                        ', '.join(clean_numeric_values(result['col_d'][:3])),
-                        ', '.join(clean_numeric_values(result['col_e'][:3])),
-                        ', '.join(clean_numeric_values(result['col_f'][:3])),
-                    ]
-                    
-                    sheet.update(
-                        f'D{row}:G{row}',
-                        [values],
-                        value_input_option='USER_ENTERED'
-                    )
-                    
-                    time.sleep(random.uniform(2.5, 7.5))
-
-                except Exception as e:
-                    logging.error(f"Row {row} error: {str(e)}")
-                    sheet.update_cell(row, 8, f"ERROR: {str(e)}")
+            # Подготовка данных для записи в Google Sheets
+            values = []
+            for res in results_list:
+                col_d_val = ', '.join(clean_numeric_values(res.get('col_d', [])[:3]))
+                col_e_val = ', '.join(clean_numeric_values(res.get('col_e', [])[:3]))
+                col_f_val = ', '.join(clean_numeric_values(res.get('col_f', [])[:3]))
+                values.append([col_d_val, col_e_val, col_f_val])
             
-            browser.close()
-
+            sheet.update(
+                range_name=f'D{start}:F{start + len(values) - 1}', 
+                values=values, 
+                value_input_option='USER_ENTERED'
+            )
+            
+            await asyncio.sleep(random.uniform(3, 7))
+            
+        await browser.close()
+        await playwright.stop()
     except Exception as e:
         logging.critical(f"Critical error: {str(e)}")
     finally:
         if os.path.exists(CONFIG["CREDS_FILE"]):
             os.remove(CONFIG["CREDS_FILE"])
 
-def main():
-    # Set the number of processes to run in parallel
-    num_processes = 10
-    urls_per_process = CONFIG["TOTAL_URLS"] // num_processes
-
-    processes = []
-    for i in range(num_processes):
-        start_index = i * urls_per_process
-        end_index = (i + 1) * urls_per_process if i < num_processes - 1 else CONFIG["TOTAL_URLS"]
-        p = multiprocessing.Process(target=process_urls, args=(start_index, end_index))
-        processes.append(p)
-        p.start()
-
-    for p in processes:
-        p.join()
-
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler("parser.log"),
-            logging.StreamHandler()
-        ]
+        handlers=[logging.FileHandler("parser.log"), logging.StreamHandler()]
     )
-    main()
+    asyncio.run(main())
