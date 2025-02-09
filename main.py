@@ -157,7 +157,7 @@ def process_urls(start_index, end_index):
 
 def main():
     # Set the number of processes to run in parallel
-    num_processes = 10
+    num_processes = 25
     urls_per_process = CONFIG["TOTAL_URLS"] // num_processes
 
     processes = []
