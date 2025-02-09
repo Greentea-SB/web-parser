@@ -22,8 +22,7 @@ CONFIG = {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
-    },
-    "MAX_ZERO_RETRIES": 3
+    }
 }
 
 def clean_numeric_values(data_list):
@@ -91,24 +90,15 @@ def parse_data(url, browser):
     
     return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
 
-def has_na_values(result):
-    return any("N/A" in values for values in result.values())
-
-def has_zero_values(result):
-    return any("0" in values for values in result.values())
+def has_na_or_zero_values(result):
+    return any("N/A" in values or "0" in values for values in result.values())
 
 def process_row_data(url, browser):
     for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
         result = parse_data(url, browser)
-        if not has_na_values(result):
-            for zero_attempt in range(CONFIG["MAX_ZERO_RETRIES"]):
-                if not has_zero_values(result):
-                    return result
-                logging.warning(f"Zero value retry {zero_attempt+1}")
-                time.sleep(CONFIG["REQUEST_DELAY"] * (zero_attempt + 1))
-                result = parse_data(url, browser)
+        if not has_na_or_zero_values(result):
             return result
-        logging.warning(f"NA retry {na_attempt+1}")
+        logging.warning(f"NA or Zero retry {na_attempt+1}")
         time.sleep(CONFIG["REQUEST_DELAY"] * (na_attempt + 1))
     return result
 
