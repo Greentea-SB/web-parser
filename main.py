@@ -139,11 +139,13 @@ def process_urls(start_index, end_index):
                         value_input_option='USER_ENTERED'
                     )
                     
-                    time.sleep(random.uniform(2.5, 7.5))
+                    time.sleep(random.uniform(2.5, 7.5))  # Delay between each row processing
 
                 except Exception as e:
                     logging.error(f"Row {row} error: {str(e)}")
                     sheet.update_cell(row, 8, f"ERROR: {str(e)}")
+                finally:
+                    time.sleep(2)  # Add a delay between each script execution
             
             browser.close()
 
@@ -155,7 +157,7 @@ def process_urls(start_index, end_index):
 
 def main():
     # Set the number of processes to run in parallel
-    num_processes = 25
+    num_processes = 10
     urls_per_process = CONFIG["TOTAL_URLS"] // num_processes
 
     processes = []
@@ -165,6 +167,7 @@ def main():
         p = multiprocessing.Process(target=process_urls, args=(start_index, end_index))
         processes.append(p)
         p.start()
+        time.sleep(2)  # Add a delay between each process start
 
     for p in processes:
         p.join()
