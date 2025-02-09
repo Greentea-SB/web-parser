@@ -17,7 +17,7 @@ CONFIG = {
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 15,
     "START_ROW": 14,
-    "TOTAL_URLS": 113,
+    "TOTAL_URLS": 513,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
