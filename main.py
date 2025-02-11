@@ -13,9 +13,8 @@ CONFIG = {
     "SPREADSHEET_ID": "1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE",
     "SHEET_NAME": "pars",
     "CREDS_FILE": "temp_key.json",
-    "MAX_NA_RETRIES": 5,          # Количество повторов при невалидном результате
-    "REQUEST_DELAY": 5,           # Базовая задержка между повторными запросами
-    "MAX_CONCURRENT_PAGES": 25,   # Максимальное число одновременных страниц
+    "MAX_NA_RETRIES": 5,          # Количество повторных попыток при невалидном результате
+    "REQUEST_DELAY": 5,           # Базовая задержка между попытками
     "START_ROW": 14,              # Первая строка с URL
     "TOTAL_URLS": 260,            # Общее число URL для обработки
     "TARGET_CLASSES": {
@@ -33,7 +32,7 @@ def clean_numeric_values(values):
     ]
 
 def is_valid_result(result):
-    """Проверяет, что все полученные значения корректны (не содержат ошибок)."""
+    """Проверяет, что все полученные значения корректны (не содержат маркеры ошибок)."""
     if result is None:
         return False
     error_markers = {"N/A", "--%", "0%", "0", ""}
@@ -57,12 +56,12 @@ async def setup_browser():
 async def fetch_data(url, browser):
     """
     Переход по URL, ожидание загрузки страницы и поиск элементов по заданным селекторам.
-    Если ни один селектор не дал результата – возвращает "N/A" для столбца.
+    Если ни один селектор не дал результата – возвращается ["N/A"] для соответствующего столбца.
     """
     page = await browser.new_page()
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-        # Дополнительная задержка уже после перехода (от 1 до 3 секунд)
+        # Задержка сразу после загрузки страницы
         await asyncio.sleep(random.uniform(1, 3))
         results = {}
         for col, selectors in CONFIG["TARGET_CLASSES"].items():
@@ -73,7 +72,7 @@ async def fetch_data(url, browser):
                     elements = await page.query_selector_all(f'.{selector}')
                     if elements:
                         results[col] = [await el.inner_text() for el in elements]
-                        break  # Если найден хотя бы один элемент, переходим к следующему столбцу
+                        break  # Если нашли данные по одному селектору, переход к следующему столбцу
                 except Exception:
                     continue
             if not results[col]:
@@ -88,7 +87,7 @@ async def fetch_data(url, browser):
 async def fetch_url(url, browser):
     """
     Обрабатывает URL с повторными попытками, если результат невалидный.
-    Повторяет запрос до MAX_NA_RETRIES раз с увеличением задержки.
+    При неудаче ждем CONFIG["REQUEST_DELAY"] * attempt секунд перед следующей попыткой.
     """
     for attempt in range(1, CONFIG["MAX_NA_RETRIES"] + 1):
         logging.info(f"Attempt {attempt}/{CONFIG['MAX_NA_RETRIES']} for {url}")
@@ -100,21 +99,18 @@ async def fetch_url(url, browser):
     logging.warning(f"Max attempts reached for {url}. Final result: {result}")
     return result
 
-async def process_urls(urls, browser):
+async def process_urls_sequential(urls, browser):
     """
-    Обрабатывает список URL с ограничением по количеству одновременных страниц.
-    Для каждого URL перед запуском добавляется случайная задержка,
-    чтобы не запускать все запросы одновременно.
+    Обрабатывает URL-адреса последовательно, с добавлением случайной задержки перед каждым запросом.
+    Это гарантирует, что в каждый момент времени обрабатывается только один сайт.
     """
-    semaphore = asyncio.Semaphore(CONFIG["MAX_CONCURRENT_PAGES"])
-
-    async def limited_fetch(url):
+    results = []
+    for url in urls:
         # Случайная задержка перед запуском запроса
         await asyncio.sleep(random.uniform(1, 3))
-        async with semaphore:
-            return await fetch_url(url, browser)
-
-    return await asyncio.gather(*(limited_fetch(url) for url in urls))
+        result = await fetch_url(url, browser)
+        results.append(result)
+    return results
 
 async def main():
     try:
@@ -134,35 +130,27 @@ async def main():
         # Запуск браузера
         browser, playwright = await setup_browser()
 
-        # Обработка URL пакетами
-        for batch_start in range(0, CONFIG["TOTAL_URLS"], CONFIG["MAX_CONCURRENT_PAGES"]):
-            current_row = CONFIG["START_ROW"] + batch_start
-            # Чтение URL из столбца C
-            cells = sheet.range(f"C{current_row}:C{current_row + CONFIG['MAX_CONCURRENT_PAGES'] - 1}")
-            urls = [cell.value.strip() for cell in cells if cell.value and cell.value.startswith("http")]
-            if not urls:
+        # Обрабатываем URL-адреса последовательно, по одному за раз.
+        for row in range(CONFIG["START_ROW"], CONFIG["START_ROW"] + CONFIG["TOTAL_URLS"]):
+            cell = sheet.acell(f"C{row}")
+            url = cell.value.strip() if cell.value else ""
+            if not url or not url.startswith("http"):
                 continue
 
-            results = await process_urls(urls, browser)
+            result = await process_urls_sequential([url], browser)
+            # process_urls_sequential возвращает список с одним элементом
+            result = result[0]
 
             # Подготовка данных для записи в столбцы D, E, F
-            update_data = []
-            for res in results:
-                row = [
-                    ", ".join(clean_numeric_values(res.get("col_d", []))[:3]),
-                    ", ".join(clean_numeric_values(res.get("col_e", []))[:3]),
-                    ", ".join(clean_numeric_values(res.get("col_f", []))[:3])
-                ]
-                update_data.append(row)
+            update_data = [
+                ", ".join(clean_numeric_values(result.get("col_d", []))[:3]),
+                ", ".join(clean_numeric_values(result.get("col_e", []))[:3]),
+                ", ".join(clean_numeric_values(result.get("col_f", []))[:3])
+            ]
+            # Обновление текущей строки в таблице
+            sheet.update(f"D{row}:F{row}", [update_data], value_input_option="USER_ENTERED")
 
-            if update_data:
-                sheet.update(
-                    f"D{current_row}:F{current_row + len(update_data) - 1}",
-                    update_data,
-                    value_input_option="USER_ENTERED"
-                )
-
-            # Задержка между пакетами (от 3 до 7 секунд)
+            # Задержка между обработкой URL (от 3 до 7 секунд)
             await asyncio.sleep(random.uniform(3, 7))
 
         await browser.close()
