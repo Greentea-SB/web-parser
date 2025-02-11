@@ -100,17 +100,14 @@ async def process_single_url(url, browser):
     logging.warning(f"Max attempts reached for {url}. Final result: {result}")
     return result
 
-async def process_urls(urls, browser):
-    """Обработка группы URL с ограничением одновременных страниц"""
-    semaphore = asyncio.Semaphore(CONFIG["MAX_CONCURRENT_PAGES"])
-
-    async def limited_process(url):
-        async with semaphore:
-            result = await process_single_url(url, browser)
-            await asyncio.sleep(random.uniform(2.0, 5.0))  # Добавлена задержка между запросами
-            return result
-
-    return await asyncio.gather(*[limited_process(url) for url in urls])
+async def delayed_process_urls(urls, browser):
+    """Обработка группы URL с задержкой между запросами"""
+    results = []
+    for url in urls:
+        result = await process_single_url(url, browser)
+        results.append(result)
+        await asyncio.sleep(3)  # Задержка в 3 секунды между запросами
+    return results
 
 async def main():
     try:
@@ -140,7 +137,7 @@ async def main():
             if not urls:
                 continue
 
-            results = await process_urls(urls, browser)
+            results = await delayed_process_urls(urls, browser)
 
             # Подготовка данных для записи
             update_data = []
