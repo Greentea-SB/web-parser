@@ -13,7 +13,7 @@ CONFIG = {
     "CREDS_FILE": "temp_key.json",
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 10,
+    "REQUEST_DELAY": 5,
     "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
@@ -158,7 +158,7 @@ async def main():
                     value_input_option='USER_ENTERED'
                 )
 
-            await asyncio.sleep(random.uniform(3, 7))
+            await asyncio.sleep(random.uniform(10, 12))
 
         await browser.close()
         await playwright.stop()
