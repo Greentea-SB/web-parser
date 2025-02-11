@@ -14,7 +14,7 @@ CONFIG = {
     "SHEET_NAME": "pars",
     "CREDS_FILE": "temp_key.json",
     "MAX_NA_RETRIES": 5,          # Количество повторов при невалидном результате
-    "REQUEST_DELAY": 5,           # Задержка между запросами
+    "REQUEST_DELAY": 5,           # Базовая задержка между повторными запросами
     "MAX_CONCURRENT_PAGES": 25,   # Максимальное число одновременных страниц
     "START_ROW": 14,              # Первая строка с URL
     "TOTAL_URLS": 260,            # Общее число URL для обработки
@@ -62,6 +62,7 @@ async def fetch_data(url, browser):
     page = await browser.new_page()
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+        # Дополнительная задержка уже после перехода (от 1 до 3 секунд)
         await asyncio.sleep(random.uniform(1, 3))
         results = {}
         for col, selectors in CONFIG["TARGET_CLASSES"].items():
@@ -72,7 +73,7 @@ async def fetch_data(url, browser):
                     elements = await page.query_selector_all(f'.{selector}')
                     if elements:
                         results[col] = [await el.inner_text() for el in elements]
-                        break  # Если нашли по одному селектору, переходим к следующему столбцу
+                        break  # Если найден хотя бы один элемент, переходим к следующему столбцу
                 except Exception:
                     continue
             if not results[col]:
@@ -100,10 +101,16 @@ async def fetch_url(url, browser):
     return result
 
 async def process_urls(urls, browser):
-    """Обрабатывает список URL с ограничением по количеству одновременных страниц."""
+    """
+    Обрабатывает список URL с ограничением по количеству одновременных страниц.
+    Для каждого URL перед запуском добавляется случайная задержка,
+    чтобы не запускать все запросы одновременно.
+    """
     semaphore = asyncio.Semaphore(CONFIG["MAX_CONCURRENT_PAGES"])
 
     async def limited_fetch(url):
+        # Случайная задержка перед запуском запроса
+        await asyncio.sleep(random.uniform(1, 3))
         async with semaphore:
             return await fetch_url(url, browser)
 
@@ -155,7 +162,7 @@ async def main():
                     value_input_option="USER_ENTERED"
                 )
 
-            # Задержка между пакетами
+            # Задержка между пакетами (от 3 до 7 секунд)
             await asyncio.sleep(random.uniform(3, 7))
 
         await browser.close()
