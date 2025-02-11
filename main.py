@@ -18,9 +18,9 @@ CONFIG = {
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
-        'col_d': ['chakra-text css-131utnt', 'chakra-text css-0', 'chakra-text css-0'],
-        'col_e': ['chakra-text css-159dfc2', 'chakra-text css-159dfc2', 'chakra-text css-0'],
-        'col_f': ['css-vmc5im', 'css-vmc5im', 'css-wob81f']
+        'col_d': ['not-italic text-neutral7 text-[14px] leading-[24px] font-bold','not-italic text-neutral7 text-[14px] leading-[24px] font-bold','not-italic text-neutral7 text-[14px] leading-[24px] font-bold'],
+        'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
+        'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     }
 }
 
