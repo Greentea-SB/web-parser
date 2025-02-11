@@ -106,7 +106,9 @@ async def process_urls(urls, browser):
 
     async def limited_process(url):
         async with semaphore:
-            return await process_single_url(url, browser)
+            result = await process_single_url(url, browser)
+            await asyncio.sleep(random.uniform(2.0, 5.0))  # Добавлена задержка между запросами
+            return result
 
     return await asyncio.gather(*[limited_process(url) for url in urls])
 
@@ -158,7 +160,7 @@ async def main():
                     value_input_option='USER_ENTERED'
                 )
 
-            await asyncio.sleep(random.uniform(3, 7))
+            await asyncio.sleep(random.uniform(3, 7))  # Добавлена задержка между циклами
 
         await browser.close()
         await playwright.stop()
