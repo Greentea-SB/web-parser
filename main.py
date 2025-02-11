@@ -13,7 +13,7 @@ CONFIG = {
     "CREDS_FILE": "temp_key.json",
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 5,
+    "REQUEST_DELAY": 10,
     "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
