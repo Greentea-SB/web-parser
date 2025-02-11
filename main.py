@@ -158,7 +158,7 @@ async def main():
                     value_input_option='USER_ENTERED'
                 )
 
-            await asyncio.sleep(random.uniform(10, 12))
+            await asyncio.sleep(random.uniform(3, 7))
 
         await browser.close()
         await playwright.stop()
