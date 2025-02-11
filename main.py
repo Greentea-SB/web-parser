@@ -62,13 +62,11 @@ async def setup_browser():
 
 async def parse_data(url, browser, error_attempt=1):
     """
-    Загружает страницу как будто от нового пользователя:
-    - Использует случайный User-Agent.
-    - Очищает куки и кэш.
-    - Может использовать прокси.
+    Улучшенная версия с ожиданием динамических данных
     """
     context_args = {
-        "user_agent": random.choice(USER_AGENTS)
+        "user_agent": random.choice(USER_AGENTS),
+        "viewport": {"width": 1920, "height": 1080}  # Добавляем реалистичный viewport
     }
 
     if PROXIES:
@@ -78,23 +76,56 @@ async def parse_data(url, browser, error_attempt=1):
     page = await context.new_page()
 
     try:
+        # Загрузка страницы с ожиданием полной готовности
         await page.goto(url, wait_until="domcontentloaded")
-        await asyncio.sleep(random.uniform(1.0, 2.5))
+        
+        # Ждем либо появления любого из целевых элементов, либо 5 секунд
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*[
+                    page.wait_for_selector(f'.{selector}', timeout=5000)
+                    for selectors in CONFIG["TARGET_CLASSES"].values()
+                    for selector in selectors
+                ]),
+                timeout=5.0
+            )
+        except:
+            pass  # Продолжаем даже если не все элементы загрузились
+
+        # Дополнительное рандомизированное ожидание
+        await asyncio.sleep(random.uniform(2.5, 4.0))  # Увеличено время ожидания
+
+        # Делаем скролл для имитации пользователя
+        await page.mouse.move(100, 100)
+        await page.mouse.wheel(0, 500)
+        await asyncio.sleep(0.5)
 
         results = {col: ["N/A"] for col in CONFIG["TARGET_CLASSES"]}
+        
         for col, selectors in CONFIG["TARGET_CLASSES"].items():
             for selector in selectors:
                 try:
-                    await page.wait_for_selector(f'.{selector}', timeout=5000)
                     elements = await page.query_selector_all(f'.{selector}')
                     if elements:
-                        results[col] = [await el.inner_text() for el in elements]
-                        break
-                except Exception:
+                        # Дополнительная проверка видимости элементов
+                        visible_elements = []
+                        for el in elements:
+                            if await el.is_visible():
+                                text = await el.inner_text()
+                                if text.strip():
+                                    visible_elements.append(text.strip())
+                        
+                        if visible_elements:
+                            results[col] = visible_elements[:3]
+                            break
+                except Exception as e:
+                    logging.debug(f"Ошибка при обработке {selector}: {str(e)}")
                     continue
 
         return results
-    except Exception:
+
+    except Exception as e:
+        logging.error(f"Attempt {error_attempt} failed: {str(e)}")
         if error_attempt < CONFIG["MAX_RETRIES"]:
             await asyncio.sleep(CONFIG["REQUEST_DELAY"] * error_attempt)
             return await parse_data(url, browser, error_attempt + 1)
