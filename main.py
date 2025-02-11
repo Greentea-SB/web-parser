@@ -56,7 +56,7 @@ async def setup_browser():
 async def parse_data(url, browser, error_attempt=1):
     page = await browser.new_page()
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=5000)
         await asyncio.sleep(random.uniform(1.0, 3.0))
 
         results = {}
