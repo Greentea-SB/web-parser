@@ -4,6 +4,7 @@ import gspread
 import logging
 import os
 import random
+import re
 from playwright.async_api import async_playwright
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -14,7 +15,7 @@ CONFIG = {
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 5,
-    "MAX_CONCURRENT_PAGES": 3,
+    "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASS": 'css-j7qwjs'
@@ -47,46 +48,80 @@ async def parse_data(url, browser, error_attempt=1):
     page = await context.new_page()
 
     try:
-        await page.goto(url, wait_until="domcontentloaded")
-        await asyncio.sleep(random.uniform(1.0, 2.5))
+        await page.goto(url, wait_until="networkidle")
+        await asyncio.sleep(random.uniform(2.0, 3.5))
 
-        await page.wait_for_selector(f'.{CONFIG["TARGET_CLASS"]}', timeout=5000)
+        # Ждем появления элемента
+        await page.wait_for_selector(f'.{CONFIG["TARGET_CLASS"]}', timeout=10000)
         
-        content = await page.evaluate(f'''
-            () => {{
-                const element = document.querySelector('.{CONFIG["TARGET_CLASS"]}');
-                if (!element) return null;
-                
-                const text = element.innerText;
-                const lines = text.split('\\n');
-                
-                let pnl = null;
-                let winRate = null;
-                let balance = null;
-                
-                for (const line of lines) {{
-                    if (line.includes('Last 7D PnL')) {{
-                        pnl = lines[lines.indexOf(line) + 1];
-                    }}
-                    if (line.includes('Win Rate')) {{
-                        winRate = lines[lines.indexOf(line) + 1];
-                    }}
-                    if (line.includes('USD')) {{
-                        balance = lines[lines.indexOf(line) - 1];
-                    }}
-                }}
-                
-                return {{
-                    pnl: pnl,
-                    winRate: winRate,
-                    balance: balance
-                }};
-            }}
+        # Получаем данные с помощью evaluate
+        content = await page.evaluate('''
+            () => {
+                // Функция очистки значения
+                const cleanValue = (value) => {
+                    if (!value) return null;
+                    return value.trim().replace(/\\n/g, '').replace(/\\s+/g, ' ');
+                };
+
+                // Находим все нужные значения
+                const pnlElement = document.evaluate(
+                    "//div[contains(text(), 'Last 7D PnL')]/following-sibling::div",
+                    document,
+                    null,
+                    XPathResult.FIRST_ORDERED_NODE_TYPE,
+                    null
+                ).singleNodeValue;
+
+                const winRateElement = document.evaluate(
+                    "//div[contains(text(), 'Win Rate')]/following-sibling::div",
+                    document,
+                    null,
+                    XPathResult.FIRST_ORDERED_NODE_TYPE,
+                    null
+                ).singleNodeValue;
+
+                const balanceElement = document.evaluate(
+                    "//div[contains(text(), 'USD')]/preceding-sibling::div",
+                    document,
+                    null,
+                    XPathResult.FIRST_ORDERED_NODE_TYPE,
+                    null
+                ).singleNodeValue;
+
+                return {
+                    pnl: cleanValue(pnlElement?.textContent),
+                    winRate: cleanValue(winRateElement?.textContent),
+                    balance: cleanValue(balanceElement?.textContent)
+                };
+            }
         ''')
-        
-        return content or {'pnl': 'N/A', 'winRate': 'N/A', 'balance': 'N/A'}
+
+        # Если не удалось получить данные через evaluate, пробуем другой метод
+        if not content or not (content['pnl'] or content['winRate'] or content['balance']):
+            # Получаем весь текст элемента
+            element = await page.query_selector(f'.{CONFIG["TARGET_CLASS"]}')
+            if element:
+                text = await element.inner_text()
+                
+                # Ищем значения с помощью регулярных выражений
+                pnl_match = re.search(r'Last 7D PnL\s*([+\-]?\d+\.?\d*%)', text)
+                win_rate_match = re.search(r'Win Rate\s*(\d+\.?\d*%)', text)
+                balance_match = re.search(r'([+\-]?\$[\d,]+\.?\d*)\s*USD', text)
+
+                content = {
+                    'pnl': pnl_match.group(1) if pnl_match else 'N/A',
+                    'winRate': win_rate_match.group(1) if win_rate_match else 'N/A',
+                    'balance': balance_match.group(1) if balance_match else 'N/A'
+                }
+
+        # Проверяем, что все значения получены
+        if not content or not (content['pnl'] or content['winRate'] or content['balance']):
+            return {'pnl': 'N/A', 'winRate': 'N/A', 'balance': 'N/A'}
+
+        return content
 
     except Exception as e:
+        logging.error(f"Error parsing {url}: {str(e)}")
         if error_attempt < CONFIG["MAX_RETRIES"]:
             await asyncio.sleep(CONFIG["REQUEST_DELAY"] * error_attempt)
             return await parse_data(url, browser, error_attempt + 1)
@@ -137,6 +172,9 @@ async def main():
                     result['winRate'],
                     result['balance']
                 ])
+
+            # Добавляем логирование для отладки
+            logging.info(f"Writing values to sheet: {values}")
 
             sheet.update(
                 range_name=f'D{start}:F{start + len(values) - 1}', 
