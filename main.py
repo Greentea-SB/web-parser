@@ -22,7 +22,7 @@ CONFIG = {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m'],
-        'pnl_data': ['css-1ug9me3']
+        'pnl_block': 'css-1ug9me3'
     }
 }
 
@@ -33,71 +33,71 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ]
 
-PROXIES = []
-
-def extract_pnl_data(text):
-    """Извлекает данные из текста PnL"""
-    # Удаляем все переносы строк и лишние пробелы
-    text = ' '.join(text.split())
-    
-    # Создаем словарь для хранения извлеченных данных
-    data = {
-        '7d_txs': 'N/A',
-        'total_pnl': 'N/A',
-        'unrealized_profits': 'N/A',
-        'avg_duration': 'N/A',
-        'total_cost': 'N/A',
-        'token_avg_cost': 'N/A',
-        'realized_profits': 'N/A'
-    }
-    
-    try:
-        # Извлекаем 7D TXs (берем первые числа до слеша)
-        txs_match = re.search(r'7DTXs\s*(\d+)\s*/\s*(\d+)', text)
-        if txs_match:
-            data['7d_txs'] = f"{txs_match.group(1)}/{txs_match.group(2)}"
-
-        # Извлекаем Total PnL
-        pnl_match = re.search(r'TotalPnL\s*([-\d.KM]+)\s*\(([-\d.]+%)\)', text)
-        if pnl_match:
-            data['total_pnl'] = f"{pnl_match.group(1)} ({pnl_match.group(2)})"
-
-        # Извлекаем Unrealized Profits
-        unr_match = re.search(r'UnrealizedProfits\s*([-\d.KM]+)', text)
-        if unr_match:
-            data['unrealized_profits'] = unr_match.group(1)
-
-        # Извлекаем 7D Avg Duration
-        dur_match = re.search(r'7DAvgDuration\s*(\d+[hd])', text)
-        if dur_match:
-            data['avg_duration'] = dur_match.group(1)
-
-        # Извлекаем 7D Total Cost
-        cost_match = re.search(r'7DTotalCost\s*([-\d.KM]+)', text)
-        if cost_match:
-            data['total_cost'] = cost_match.group(1)
-
-        # Извлекаем 7D Token Avg Cost
-        token_cost_match = re.search(r'7DTokenAvgCost\s*([-\d.,]+)', text)
-        if token_cost_match:
-            data['token_avg_cost'] = token_cost_match.group(1)
-
-        # Извлекаем 7D Token Avg Realized Profits
-        realized_match = re.search(r'7DTokenAvgRealizedProfits\s*([-\d.,]+)', text)
-        if realized_match:
-            data['realized_profits'] = realized_match.group(1)
-
-    except Exception as e:
-        logging.error(f"Error parsing PnL data: {e}")
-
-    return data
+PROXIES = [
+    # Пример прокси (замени на свои)
+    # "http://username:password@ip:port",
+    # "http://ip:port",
+]
 
 def clean_numeric_values(data_list):
     return [item.strip().replace('+', '').replace(' ', '').replace('$', '').replace('€', '').replace('£', '') for item in data_list]
 
+def parse_pnl_block(text):
+    """
+    Извлекает только числовые значения из PnL блока
+    Возвращает список значений в порядке для колонок g, h, i, j, k, l, m
+    """
+    # Очищаем текст от лишних пробелов и переносов
+    text = ' '.join(text.split())
+    
+    try:
+        # Извлекаем все числовые значения в правильном порядке
+        values = {
+            'g': None,  # Первое число после 7DTXs
+            'h': None,  # Число после /
+            'i': None,  # Число в TotalPnL (249.7K)
+            'j': None,  # Процент в скобках (52.47)
+            'k': None,  # Число после UnrealizedProfits
+            'l': None,  # Число после 7DTotalCost
+            'm': None   # Последнее число (RealizedProfits)
+        }
+
+        # Находим первые два числа (7DTXs)
+        txs_numbers = re.findall(r'7DTXs\s*(\d+)\s*/\s*(\d+)', text)
+        if txs_numbers:
+            values['g'] = txs_numbers[0][0]  # 92
+            values['h'] = txs_numbers[0][1]  # 58
+
+        # Находим TotalPnL
+        pnl_match = re.search(r'TotalPnL\s*([\d.]+K?M?)\s*\(([-\d.]+)%\)', text)
+        if pnl_match:
+            values['i'] = pnl_match.group(1)  # 249.7K
+            values['j'] = pnl_match.group(2)  # 52.47
+
+        # Находим UnrealizedProfits
+        unr_match = re.search(r'UnrealizedProfits\s*([\d.]+K?M?)', text)
+        if unr_match:
+            values['k'] = unr_match.group(1)  # 0
+
+        # Находим 7DTotalCost
+        cost_match = re.search(r'7DTotalCost\s*([\d.]+K?M?)', text)
+        if cost_match:
+            values['l'] = cost_match.group(1)  # 44.1K
+
+        # Находим RealizedProfits (последнее число)
+        profit_match = re.search(r'7DTokenAvgRealizedProfits\s*([-\d,.]+)', text)
+        if profit_match:
+            values['m'] = profit_match.group(1)  # -405.28
+
+        return values
+
+    except Exception as e:
+        logging.error(f"Error parsing PnL block: {e}")
+        return {k: 'N/A' for k in 'ghijklm'}
+
 def is_valid_result(result):
     error_markers = {"N/A", "--%", "0%", "0"}
-    for col in ['col_d', 'col_e', 'col_f']:  # Проверяем только основные колонки
+    for col in ['col_d', 'col_e', 'col_f']:
         if not result.get(col) or result[col][0] in error_markers:
             return False
     return True
@@ -134,10 +134,10 @@ async def parse_data(url, browser, error_attempt=1):
             'col_d': ["N/A"],
             'col_e': ["N/A"],
             'col_f': ["N/A"],
-            'pnl_data': {}
+            'pnl_values': {}
         }
 
-        # Парсим основные колонки
+        # Парсим базовые колонки
         for col in ['col_d', 'col_e', 'col_f']:
             for selector in CONFIG["TARGET_CLASSES"][col]:
                 try:
@@ -149,16 +149,18 @@ async def parse_data(url, browser, error_attempt=1):
                 except Exception:
                     continue
 
-        # Парсим PnL данные
+        # Парсим PnL блок
         try:
-            pnl_element = await page.query_selector('.css-1ug9me3')
+            pnl_element = await page.query_selector(f'.{CONFIG["TARGET_CLASSES"]["pnl_block"]}')
             if pnl_element:
                 pnl_text = await pnl_element.inner_text()
-                results['pnl_data'] = extract_pnl_data(pnl_text)
+                results['pnl_values'] = parse_pnl_block(pnl_text)
         except Exception as e:
-            logging.error(f"Error parsing PnL section: {e}")
+            logging.error(f"Error getting PnL block: {e}")
+            results['pnl_values'] = {k: 'N/A' for k in 'ghijklm'}
 
         return results
+
     except Exception:
         if error_attempt < CONFIG["MAX_RETRIES"]:
             await asyncio.sleep(CONFIG["REQUEST_DELAY"] * error_attempt)
@@ -168,7 +170,7 @@ async def parse_data(url, browser, error_attempt=1):
                 'col_d': ["FAIL"],
                 'col_e': ["FAIL"],
                 'col_f': ["FAIL"],
-                'pnl_data': {}
+                'pnl_values': {k: 'FAIL' for k in 'ghijklm'}
             }
     finally:
         await context.close()
@@ -187,18 +189,18 @@ async def process_urls(urls, browser):
     
     values = []
     for res in results_list:
-        pnl_data = res.get('pnl_data', {})
+        pnl_vals = res.get('pnl_values', {})
         row_values = [
             ', '.join(clean_numeric_values(res.get('col_d', [])[:3])),
             ', '.join(clean_numeric_values(res.get('col_e', [])[:3])),
             ', '.join(clean_numeric_values(res.get('col_f', [])[:3])),
-            pnl_data.get('7d_txs', 'N/A'),
-            pnl_data.get('total_pnl', 'N/A'),
-            pnl_data.get('unrealized_profits', 'N/A'),
-            pnl_data.get('avg_duration', 'N/A'),
-            pnl_data.get('total_cost', 'N/A'),
-            pnl_data.get('token_avg_cost', 'N/A'),
-            pnl_data.get('realized_profits', 'N/A')
+            pnl_vals.get('g', 'N/A'),
+            pnl_vals.get('h', 'N/A'),
+            pnl_vals.get('i', 'N/A'),
+            pnl_vals.get('j', 'N/A'),
+            pnl_vals.get('k', 'N/A'),
+            pnl_vals.get('l', 'N/A'),
+            pnl_vals.get('m', 'N/A')
         ]
         values.append(row_values)
     
