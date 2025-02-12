@@ -5,7 +5,7 @@ import logging
 import os
 import random
 import re
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError
 from oauth2client.service_account import ServiceAccountCredentials
 
 CONFIG = {
@@ -15,10 +15,11 @@ CONFIG = {
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 5,
-    "MAX_CONCURRENT_PAGES": 10,
+    "MAX_CONCURRENT_PAGES": 5,  # Уменьшено количество одновременных запросов
     "START_ROW": 14,
     "TOTAL_URLS": 260,
-    "TARGET_CLASS": 'css-j7qwjs'
+    "TARGET_CLASS": 'css-j7qwjs',
+    "PAGE_TIMEOUT": 60000  # Увеличен таймаут до 60 секунд
 }
 
 USER_AGENTS = [
@@ -43,67 +44,63 @@ async def setup_browser():
 
 async def parse_data(url, browser, error_attempt=1):
     context = await browser.new_context(
-        user_agent=random.choice(USER_AGENTS)
+        user_agent=random.choice(USER_AGENTS),
+        viewport={'width': 1920, 'height': 1080}
     )
     page = await context.new_page()
 
     try:
-        await page.goto(url, wait_until="networkidle")
-        await asyncio.sleep(random.uniform(2.0, 3.5))
-
-        # Ждем появления элемента
-        await page.wait_for_selector(f'.{CONFIG["TARGET_CLASS"]}', timeout=10000)
+        # Устанавливаем таймаут и пробуем загрузить страницу
+        page.set_default_timeout(CONFIG["PAGE_TIMEOUT"])
         
-        # Получаем данные с помощью evaluate
+        try:
+            # Сначала пробуем с domcontentloaded
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        except TimeoutError:
+            # Если не получилось, пробуем без ожидания загрузки
+            await page.goto(url, wait_until="commit", timeout=30000)
+
+        # Ждем появления целевого элемента
+        try:
+            await page.wait_for_selector(f'.{CONFIG["TARGET_CLASS"]}', timeout=15000)
+        except TimeoutError:
+            logging.warning(f"Target element not found for {url}")
+            return {'pnl': 'N/A', 'winRate': 'N/A', 'balance': 'N/A'}
+
+        # Даем странице немного времени на загрузку динамического контента
+        await asyncio.sleep(random.uniform(2.0, 3.0))
+
+        # Получаем данные
         content = await page.evaluate('''
             () => {
-                // Функция очистки значения
-                const cleanValue = (value) => {
-                    if (!value) return null;
-                    return value.trim().replace(/\\n/g, '').replace(/\\s+/g, ' ');
+                const element = document.querySelector('.css-j7qwjs');
+                if (!element) return null;
+
+                const text = element.innerText;
+                const lines = text.split('\\n');
+
+                const findValue = (marker) => {
+                    for (let i = 0; i < lines.length; i++) {
+                        if (lines[i].includes(marker)) {
+                            return lines[i + 1] || null;
+                        }
+                    }
+                    return null;
                 };
 
-                // Находим все нужные значения
-                const pnlElement = document.evaluate(
-                    "//div[contains(text(), 'Last 7D PnL')]/following-sibling::div",
-                    document,
-                    null,
-                    XPathResult.FIRST_ORDERED_NODE_TYPE,
-                    null
-                ).singleNodeValue;
-
-                const winRateElement = document.evaluate(
-                    "//div[contains(text(), 'Win Rate')]/following-sibling::div",
-                    document,
-                    null,
-                    XPathResult.FIRST_ORDERED_NODE_TYPE,
-                    null
-                ).singleNodeValue;
-
-                const balanceElement = document.evaluate(
-                    "//div[contains(text(), 'USD')]/preceding-sibling::div",
-                    document,
-                    null,
-                    XPathResult.FIRST_ORDERED_NODE_TYPE,
-                    null
-                ).singleNodeValue;
-
                 return {
-                    pnl: cleanValue(pnlElement?.textContent),
-                    winRate: cleanValue(winRateElement?.textContent),
-                    balance: cleanValue(balanceElement?.textContent)
+                    pnl: findValue('Last 7D PnL'),
+                    winRate: findValue('Win Rate'),
+                    balance: findValue('USD')
                 };
             }
         ''')
 
-        # Если не удалось получить данные через evaluate, пробуем другой метод
-        if not content or not (content['pnl'] or content['winRate'] or content['balance']):
-            # Получаем весь текст элемента
+        if not content:
+            # Пробуем альтернативный метод
             element = await page.query_selector(f'.{CONFIG["TARGET_CLASS"]}')
             if element:
                 text = await element.inner_text()
-                
-                # Ищем значения с помощью регулярных выражений
                 pnl_match = re.search(r'Last 7D PnL\s*([+\-]?\d+\.?\d*%)', text)
                 win_rate_match = re.search(r'Win Rate\s*(\d+\.?\d*%)', text)
                 balance_match = re.search(r'([+\-]?\$[\d,]+\.?\d*)\s*USD', text)
@@ -114,25 +111,23 @@ async def parse_data(url, browser, error_attempt=1):
                     'balance': balance_match.group(1) if balance_match else 'N/A'
                 }
 
-        # Проверяем, что все значения получены
-        if not content or not (content['pnl'] or content['winRate'] or content['balance']):
-            return {'pnl': 'N/A', 'winRate': 'N/A', 'balance': 'N/A'}
-
-        return content
+        return content or {'pnl': 'N/A', 'winRate': 'N/A', 'balance': 'N/A'}
 
     except Exception as e:
         logging.error(f"Error parsing {url}: {str(e)}")
         if error_attempt < CONFIG["MAX_RETRIES"]:
             await asyncio.sleep(CONFIG["REQUEST_DELAY"] * error_attempt)
             return await parse_data(url, browser, error_attempt + 1)
-        else:
-            return {'pnl': 'FAIL', 'winRate': 'FAIL', 'balance': 'FAIL'}
+        return {'pnl': 'FAIL', 'winRate': 'FAIL', 'balance': 'FAIL'}
     finally:
         await context.close()
 
 async def process_single_url(url, browser):
-    result = await parse_data(url, browser)
-    return result
+    try:
+        return await parse_data(url, browser)
+    except Exception as e:
+        logging.error(f"Error processing {url}: {str(e)}")
+        return {'pnl': 'FAIL', 'winRate': 'FAIL', 'balance': 'FAIL'}
 
 async def process_urls(urls, browser):
     tasks = [process_single_url(url, browser) for url in urls]
@@ -173,7 +168,6 @@ async def main():
                     result['balance']
                 ])
 
-            # Добавляем логирование для отладки
             logging.info(f"Writing values to sheet: {values}")
 
             sheet.update(
