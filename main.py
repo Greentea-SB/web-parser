@@ -17,12 +17,7 @@ CONFIG = {
     "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
-    "TARGET_CLASSES": {
-        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
-        'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
-        'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m'],
-        'col_g': ['css-vmc5im', 'css-wob81f']
-    }
+    "TARGET_CLASS": 'css-j7qwjs'  # Целевой класс для парсинга
 }
 
 USER_AGENTS = [
@@ -31,22 +26,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ]
-
-PROXIES = [
-    # Пример прокси (замени на свои)
-    # "http://username:password@ip:port",
-    # "http://ip:port",
-]
-
-def clean_numeric_values(data_list):
-    return [item.strip().replace('+', '').replace(' ', '').replace('$', '').replace('€', '').replace('£', '') for item in data_list]
-
-def is_valid_result(result):
-    error_markers = {"N/A", "--%", "0%", "0"}
-    for col in CONFIG["TARGET_CLASSES"]:
-        if not result.get(col) or result[col][0] in error_markers:
-            return False
-    return True
 
 async def setup_browser():
     playwright = await async_playwright().start()
@@ -62,54 +41,53 @@ async def setup_browser():
     return browser, playwright
 
 async def parse_data(url, browser, error_attempt=1):
-    """
-    Загружает страницу как будто от нового пользователя:
-    - Использует случайный User-Agent.
-    - Очищает куки и кэш.
-    - Может использовать прокси.
-    """
-    context_args = {
-        "user_agent": random.choice(USER_AGENTS)
-    }
-
-    if PROXIES:
-        context_args["proxy"] = {"server": random.choice(PROXIES)}
-
-    context = await browser.new_context(**context_args)
+    context = await browser.new_context(
+        user_agent=random.choice(USER_AGENTS)
+    )
     page = await context.new_page()
 
     try:
         await page.goto(url, wait_until="domcontentloaded")
         await asyncio.sleep(random.uniform(1.0, 2.5))
 
-        results = {col: ["N/A"] for col in CONFIG["TARGET_CLASSES"]}
-        for col, selectors in CONFIG["TARGET_CLASSES"].items():
-            for selector in selectors:
-                try:
-                    await page.wait_for_selector(f'.{selector}', timeout=5000)
-                    elements = await page.query_selector_all(f'.{selector}')
-                    if elements:
-                        results[col] = [await el.inner_text() for el in elements]
-                        break
-                except Exception:
-                    continue
+        # Ждем появления целевого элемента
+        await page.wait_for_selector(f'.{CONFIG["TARGET_CLASS"]}', timeout=5000)
+        
+        # Получаем весь HTML-контент элемента
+        content = await page.evaluate(f'''
+            () => {{
+                const element = document.querySelector('.{CONFIG["TARGET_CLASS"]}');
+                return element ? element.innerText : null;
+            }}
+        ''')
+        
+        # Получаем все вложенные элементы
+        elements = await page.query_selector_all(f'.{CONFIG["TARGET_CLASS"]} *')
+        nested_content = []
+        for element in elements:
+            try:
+                text = await element.inner_text()
+                if text.strip():
+                    nested_content.append(text.strip())
+            except:
+                continue
 
-        return results
-    except Exception:
+        return {
+            'main_content': content,
+            'nested_content': nested_content
+        }
+
+    except Exception as e:
         if error_attempt < CONFIG["MAX_RETRIES"]:
             await asyncio.sleep(CONFIG["REQUEST_DELAY"] * error_attempt)
             return await parse_data(url, browser, error_attempt + 1)
         else:
-            return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
+            return {'main_content': 'FAIL', 'nested_content': []}
     finally:
         await context.close()
 
 async def process_single_url(url, browser):
-    for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
-        result = await parse_data(url, browser)
-        if is_valid_result(result):
-            return result
-        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
+    result = await parse_data(url, browser)
     return result
 
 async def process_urls(urls, browser):
@@ -144,15 +122,15 @@ async def main():
             results_list = await process_urls(urls, browser)
 
             values = []
-            for res in results_list:
-                col_d_val = ', '.join(clean_numeric_values(res.get('col_d', [])[:3]))
-                col_e_val = ', '.join(clean_numeric_values(res.get('col_e', [])[:3]))
-                col_f_val = ', '.join(clean_numeric_values(res.get('col_f', [])[:3]))
-                col_g_val = ', '.join(clean_numeric_values(res.get('col_g', [])[:3]))
-                values.append([col_d_val, col_e_val, col_f_val, col_g_val])
+            for result in results_list:
+                # Форматируем данные для записи в таблицу
+                main_content = result['main_content'] if result['main_content'] != 'FAIL' else 'FAIL'
+                nested_content = ' | '.join(result['nested_content']) if result['nested_content'] else 'No content'
+                values.append([main_content, nested_content])
 
+            # Записываем результаты в таблицу (колонки D и E)
             sheet.update(
-                range_name=f'D{start}:G{start + len(values) - 1}', 
+                range_name=f'D{start}:E{start + len(values) - 1}', 
                 values=values, 
                 value_input_option='USER_ENTERED'
             )
