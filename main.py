@@ -8,6 +8,16 @@ import re
 from playwright.async_api import async_playwright
 from oauth2client.service_account import ServiceAccountCredentials
 
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('parser.log', mode='w', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
 CONFIG = {
     "SPREADSHEET_ID": "1loVjBMvaO-Ia5JnzMTz8YaGqq10XDz-L1LRWNDDVzsE",
     "SHEET_NAME": "pars",
@@ -33,23 +43,15 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ]
 
-PROXIES = [
-    # Пример прокси (замени на свои)
-    # "http://username:password@ip:port",
-    # "http://ip:port",
-]
+PROXIES = []
 
 def clean_numeric_values(data_list):
     return [item.strip().replace('+', '').replace(' ', '').replace('$', '').replace('€', '').replace('£', '') for item in data_list]
 
 def parse_pnl_block(text):
-    """
-    Извлекает только числовые значения из PnL блока
-    """
-    logging.info(f"Raw PnL text: {text}")  # Добавляем логирование
+    """Извлекает числовые значения из PnL блока"""
+    logging.info(f"Starting to parse PnL block. Raw text: {text}")
     
-    # Очищаем текст от лишних пробелов и переносов
-    text = ' '.join(text.split())
     values = {
         'g': 'N/A',
         'h': 'N/A',
@@ -61,54 +63,88 @@ def parse_pnl_block(text):
     }
     
     try:
-        # Разбиваем текст на строки
-        lines = text.split('\n')
-        logging.info(f"Split lines: {lines}")  # Логируем разбитые строки
+        # Разбиваем на строки и очищаем
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        logging.info(f"Split lines: {lines}")
 
-        # Ищем числа после "7DTXs"
-        if "7DTXs" in text:
-            numbers = re.findall(r'\d+', text.split("7DTXs")[1].split("TotalPnL")[0])
-            if len(numbers) >= 2:
-                values['g'] = numbers[0]
-                values['h'] = numbers[1]
+        # Поиск TXs чисел (первые два числа после 7DTXs)
+        for i, line in enumerate(lines):
+            if '7DTXs' in line:
+                # Ищем следующие две строки с числами
+                numbers = []
+                for j in range(i+1, min(i+5, len(lines))):
+                    if lines[j].isdigit():
+                        numbers.append(lines[j])
+                    if len(numbers) == 2:
+                        break
+                if len(numbers) >= 2:
+                    values['g'] = numbers[0]
+                    values['h'] = numbers[1]
+                break
 
-        # Ищем TotalPnL
-        if "TotalPnL" in text:
-            pnl_text = text.split("TotalPnL")[1].split("UnrealizedProfits")[0]
-            pnl_match = re.search(r'([\d.]+K?M?)\s*\(([-\d.]+)%\)', pnl_text)
-            if pnl_match:
-                values['i'] = pnl_match.group(1)
-                values['j'] = pnl_match.group(2)
+        # Поиск TotalPnL
+        for i, line in enumerate(lines):
+            if 'TotalPnL' in line:
+                next_line = lines[i+1] if i+1 < len(lines) else ''
+                pnl_match = re.search(r'([\d.]+K?M?)\s*\(([-\d.]+)%\)', next_line)
+                if pnl_match:
+                    values['i'] = pnl_match.group(1)
+                    values['j'] = pnl_match.group(2)
+                break
 
-        # Ищем UnrealizedProfits
-        if "UnrealizedProfits" in text:
-            unr_text = text.split("UnrealizedProfits")[1].split("7DAvgDuration")[0]
-            unr_match = re.search(r'([\d.]+K?M?)', unr_text)
-            if unr_match:
-                values['k'] = unr_match.group(1)
+        # Поиск UnrealizedProfits
+        for i, line in enumerate(lines):
+            if 'UnrealizedProfits' in line:
+                next_line = lines[i+1] if i+1 < len(lines) else ''
+                if next_line:
+                    values['k'] = re.search(r'([\d.]+K?M?)', next_line).group(1)
+                break
 
-        # Ищем 7DTotalCost
-        if "7DTotalCost" in text:
-            cost_text = text.split("7DTotalCost")[1].split("7DTokenAvgCost")[0]
-            cost_match = re.search(r'([\d.]+K?M?)', cost_text)
-            if cost_match:
-                values['l'] = cost_match.group(1)
+        # Поиск 7DTotalCost
+        for i, line in enumerate(lines):
+            if '7DTotalCost' in line:
+                next_line = lines[i+1] if i+1 < len(lines) else ''
+                if next_line:
+                    values['l'] = re.search(r'([\d.]+K?M?)', next_line).group(1)
+                break
 
-        # Ищем последнее число (RealizedProfits)
-        if "7DTokenAvgRealizedProfits" in text:
-            profit_text = text.split("7DTokenAvgRealizedProfits")[1]
-            profit_match = re.search(r'([-\d,.]+)', profit_text)
-            if profit_match:
-                values['m'] = profit_match.group(1)
+        # Поиск RealizedProfits (последнее число)
+        for i, line in enumerate(lines):
+            if '7DTokenAvgRealizedProfits' in line:
+                next_line = lines[i+1] if i+1 < len(lines) else ''
+                if next_line:
+                    values['m'] = re.search(r'([-\d,.]+)', next_line).group(1)
+                break
 
-        logging.info(f"Extracted values: {values}")  # Логируем извлеченные значения
+        logging.info(f"Extracted values: {values}")
         return values
 
     except Exception as e:
         logging.error(f"Error parsing PnL block: {e}")
         return values
 
+def is_valid_result(result):
+    error_markers = {"N/A", "--%", "0%", "0"}
+    for col in ['col_d', 'col_e', 'col_f']:
+        if not result.get(col) or result[col][0] in error_markers:
+            return False
+    return True
+
+async def setup_browser():
+    playwright = await async_playwright().start()
+    browser = await playwright.chromium.launch(
+        headless=True,
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process'
+        ]
+    )
+    return browser, playwright
+
 async def parse_data(url, browser, error_attempt=1):
+    logging.info(f"Starting to parse URL: {url}")
     context_args = {
         "user_agent": random.choice(USER_AGENTS)
     }
@@ -138,25 +174,24 @@ async def parse_data(url, browser, error_attempt=1):
                     elements = await page.query_selector_all(f'.{selector}')
                     if elements:
                         results[col] = [await el.inner_text() for el in elements]
+                        logging.info(f"Found {col} values: {results[col]}")
                         break
-                except Exception:
-                    continue
+                except Exception as e:
+                    logging.error(f"Error parsing {col}: {e}")
 
         # Парсим PnL блок
         try:
-            # Добавляем ожидание элемента
             await page.wait_for_selector('.css-1ug9me3', timeout=5000)
             pnl_elements = await page.query_selector_all('.css-1ug9me3')
             
             if pnl_elements:
-                # Получаем текст из всех найденных элементов
-                pnl_texts = [await el.inner_text() for el in pnl_elements]
                 logging.info(f"Found {len(pnl_elements)} PnL elements")
-                logging.info(f"PnL texts: {pnl_texts}")  # Логируем найденные тексты
-                
-                # Используем первый найденный элемент
-                pnl_text = pnl_texts[0] if pnl_texts else ""
-                results['pnl_values'] = parse_pnl_block(pnl_text)
+                for i, el in enumerate(pnl_elements):
+                    text = await el.inner_text()
+                    logging.info(f"PnL element {i} text: {text}")
+                    if '7DTXs' in text:  # Берем только нужный блок
+                        results['pnl_values'] = parse_pnl_block(text)
+                        break
             else:
                 logging.warning("No PnL elements found")
                 results['pnl_values'] = {k: 'N/A' for k in 'ghijklm'}
@@ -180,3 +215,87 @@ async def parse_data(url, browser, error_attempt=1):
             }
     finally:
         await context.close()
+
+async def process_single_url(url, browser):
+    for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
+        result = await parse_data(url, browser)
+        if is_valid_result(result):
+            return result
+        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
+    return result
+
+async def process_urls(urls, browser):
+    tasks = [process_single_url(url, browser) for url in urls]
+    results_list = await asyncio.gather(*tasks)
+    
+    values = []
+    for res in results_list:
+        pnl_vals = res.get('pnl_values', {})
+        row_values = [
+            ', '.join(clean_numeric_values(res.get('col_d', [])[:3])),
+            ', '.join(clean_numeric_values(res.get('col_e', [])[:3])),
+            ', '.join(clean_numeric_values(res.get('col_f', [])[:3])),
+            pnl_vals.get('g', 'N/A'),
+            pnl_vals.get('h', 'N/A'),
+            pnl_vals.get('i', 'N/A'),
+            pnl_vals.get('j', 'N/A'),
+            pnl_vals.get('k', 'N/A'),
+            pnl_vals.get('l', 'N/A'),
+            pnl_vals.get('m', 'N/A')
+        ]
+        logging.info(f"Prepared row values: {row_values}")
+        values.append(row_values)
+    
+    return values
+
+async def main():
+    logging.info("Starting parser")
+    try:
+        encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+        if not encoded_creds:
+            raise ValueError("GOOGLE_CREDENTIALS_BASE64 not set")
+        with open(CONFIG["CREDS_FILE"], 'w') as f:
+            f.write(base64.b64decode(encoded_creds).decode('utf-8'))
+
+        gc = gspread.authorize(
+            ServiceAccountCredentials.from_json_keyfile_name(
+                CONFIG["CREDS_FILE"],
+                ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+            )
+        )
+        sheet = gc.open_by_key(CONFIG["SPREADSHEET_ID"]).worksheet(CONFIG["SHEET_NAME"])
+        logging.info("Connected to Google Sheet")
+
+        browser, playwright = await setup_browser()
+        logging.info("Browser setup complete")
+
+        for i in range(0, CONFIG["TOTAL_URLS"], CONFIG["MAX_CONCURRENT_PAGES"]):
+            start = CONFIG["START_ROW"] + i
+            urls = [sheet.cell(start + j, 3).value for j in range(CONFIG["MAX_CONCURRENT_PAGES"])]
+            urls = [url for url in urls if url and url.startswith('http')]
+            if not urls:
+                continue
+
+            logging.info(f"Processing batch of URLs starting at row {start}")
+            values = await process_urls(urls, browser)
+
+            logging.info(f"Updating sheet range D{start}:M{start + len(values) - 1}")
+            sheet.update(
+                range_name=f'D{start}:M{start + len(values) - 1}', 
+                values=values, 
+                value_input_option='USER_ENTERED'
+            )
+
+            await asyncio.sleep(random.uniform(3, 7))
+
+        await browser.close()
+        await playwright.stop()
+        logging.info("Parser finished successfully")
+    except Exception as e:
+        logging.critical(f"Critical error: {str(e)}")
+    finally:
+        if os.path.exists(CONFIG["CREDS_FILE"]):
+            os.remove(CONFIG["CREDS_FILE"])
+
+if __name__ == "__main__":
+    asyncio.run(main())
