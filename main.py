@@ -4,6 +4,7 @@ import gspread
 import logging
 import os
 import random
+import re
 from playwright.async_api import async_playwright
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -14,20 +15,14 @@ CONFIG = {
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 5,
-    "MAX_CONCURRENT_PAGES": 5,
+    "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m'],
-        'col_g': ['css-1ug9me3'],  # 7D TXs
-        'col_h': ['css-1ug9me3'],  # Total PnL
-        'col_i': ['css-1ug9me3'],  # Unrealized Profits
-        'col_j': ['css-1ug9me3'],  # 7D Avg Duration
-        'col_k': ['css-1ug9me3'],  # 7D Total Cost
-        'col_l': ['css-1ug9me3'],  # 7D Token Avg Cost
-        'col_m': ['css-1ug9me3']   # 7D Token Avg Realized Profits
+        'pnl_data': ['css-1ug9me3']
     }
 }
 
@@ -38,18 +33,71 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ]
 
-PROXIES = [
-    # Пример прокси (замени на свои)
-    # "http://username:password@ip:port",
-    # "http://ip:port",
-]
+PROXIES = []
+
+def extract_pnl_data(text):
+    """Извлекает данные из текста PnL"""
+    # Удаляем все переносы строк и лишние пробелы
+    text = ' '.join(text.split())
+    
+    # Создаем словарь для хранения извлеченных данных
+    data = {
+        '7d_txs': 'N/A',
+        'total_pnl': 'N/A',
+        'unrealized_profits': 'N/A',
+        'avg_duration': 'N/A',
+        'total_cost': 'N/A',
+        'token_avg_cost': 'N/A',
+        'realized_profits': 'N/A'
+    }
+    
+    try:
+        # Извлекаем 7D TXs (берем первые числа до слеша)
+        txs_match = re.search(r'7DTXs\s*(\d+)\s*/\s*(\d+)', text)
+        if txs_match:
+            data['7d_txs'] = f"{txs_match.group(1)}/{txs_match.group(2)}"
+
+        # Извлекаем Total PnL
+        pnl_match = re.search(r'TotalPnL\s*([-\d.KM]+)\s*\(([-\d.]+%)\)', text)
+        if pnl_match:
+            data['total_pnl'] = f"{pnl_match.group(1)} ({pnl_match.group(2)})"
+
+        # Извлекаем Unrealized Profits
+        unr_match = re.search(r'UnrealizedProfits\s*([-\d.KM]+)', text)
+        if unr_match:
+            data['unrealized_profits'] = unr_match.group(1)
+
+        # Извлекаем 7D Avg Duration
+        dur_match = re.search(r'7DAvgDuration\s*(\d+[hd])', text)
+        if dur_match:
+            data['avg_duration'] = dur_match.group(1)
+
+        # Извлекаем 7D Total Cost
+        cost_match = re.search(r'7DTotalCost\s*([-\d.KM]+)', text)
+        if cost_match:
+            data['total_cost'] = cost_match.group(1)
+
+        # Извлекаем 7D Token Avg Cost
+        token_cost_match = re.search(r'7DTokenAvgCost\s*([-\d.,]+)', text)
+        if token_cost_match:
+            data['token_avg_cost'] = token_cost_match.group(1)
+
+        # Извлекаем 7D Token Avg Realized Profits
+        realized_match = re.search(r'7DTokenAvgRealizedProfits\s*([-\d.,]+)', text)
+        if realized_match:
+            data['realized_profits'] = realized_match.group(1)
+
+    except Exception as e:
+        logging.error(f"Error parsing PnL data: {e}")
+
+    return data
 
 def clean_numeric_values(data_list):
     return [item.strip().replace('+', '').replace(' ', '').replace('$', '').replace('€', '').replace('£', '') for item in data_list]
 
 def is_valid_result(result):
     error_markers = {"N/A", "--%", "0%", "0"}
-    for col in CONFIG["TARGET_CLASSES"]:
+    for col in ['col_d', 'col_e', 'col_f']:  # Проверяем только основные колонки
         if not result.get(col) or result[col][0] in error_markers:
             return False
     return True
@@ -82,9 +130,14 @@ async def parse_data(url, browser, error_attempt=1):
         await page.goto(url, wait_until="domcontentloaded")
         await asyncio.sleep(random.uniform(1.0, 2.5))
 
-        results = {col: ["N/A"] for col in CONFIG["TARGET_CLASSES"]}
-        
-        # Handle original columns (d, e, f)
+        results = {
+            'col_d': ["N/A"],
+            'col_e': ["N/A"],
+            'col_f': ["N/A"],
+            'pnl_data': {}
+        }
+
+        # Парсим основные колонки
         for col in ['col_d', 'col_e', 'col_f']:
             for selector in CONFIG["TARGET_CLASSES"][col]:
                 try:
@@ -96,25 +149,14 @@ async def parse_data(url, browser, error_attempt=1):
                 except Exception:
                     continue
 
-        # Handle PnL data columns (g through m)
+        # Парсим PnL данные
         try:
-            pnl_elements = await page.query_selector_all('.css-1ug9me3')
-            if pnl_elements:
-                pnl_texts = [await el.inner_text() for el in pnl_elements]
-                pnl_mapping = {
-                    'col_g': 0,  # 7D TXs
-                    'col_h': 3,  # Total PnL
-                    'col_i': 4,  # Unrealized Profits
-                    'col_j': 5,  # 7D Avg Duration
-                    'col_k': 6,  # 7D Total Cost
-                    'col_l': 7,  # 7D Token Avg Cost
-                    'col_m': 8,  # 7D Token Avg Realized Profits
-                }
-                for col, idx in pnl_mapping.items():
-                    if idx < len(pnl_texts):
-                        results[col] = [pnl_texts[idx]]
-        except Exception:
-            pass
+            pnl_element = await page.query_selector('.css-1ug9me3')
+            if pnl_element:
+                pnl_text = await pnl_element.inner_text()
+                results['pnl_data'] = extract_pnl_data(pnl_text)
+        except Exception as e:
+            logging.error(f"Error parsing PnL section: {e}")
 
         return results
     except Exception:
@@ -122,7 +164,12 @@ async def parse_data(url, browser, error_attempt=1):
             await asyncio.sleep(CONFIG["REQUEST_DELAY"] * error_attempt)
             return await parse_data(url, browser, error_attempt + 1)
         else:
-            return {col: ["FAIL"] for col in CONFIG["TARGET_CLASSES"]}
+            return {
+                'col_d': ["FAIL"],
+                'col_e': ["FAIL"],
+                'col_f': ["FAIL"],
+                'pnl_data': {}
+            }
     finally:
         await context.close()
 
@@ -140,17 +187,18 @@ async def process_urls(urls, browser):
     
     values = []
     for res in results_list:
+        pnl_data = res.get('pnl_data', {})
         row_values = [
             ', '.join(clean_numeric_values(res.get('col_d', [])[:3])),
             ', '.join(clean_numeric_values(res.get('col_e', [])[:3])),
             ', '.join(clean_numeric_values(res.get('col_f', [])[:3])),
-            ', '.join(clean_numeric_values(res.get('col_g', [])[:1])),
-            ', '.join(clean_numeric_values(res.get('col_h', [])[:1])),
-            ', '.join(clean_numeric_values(res.get('col_i', [])[:1])),
-            ', '.join(clean_numeric_values(res.get('col_j', [])[:1])),
-            ', '.join(clean_numeric_values(res.get('col_k', [])[:1])),
-            ', '.join(clean_numeric_values(res.get('col_l', [])[:1])),
-            ', '.join(clean_numeric_values(res.get('col_m', [])[:1]))
+            pnl_data.get('7d_txs', 'N/A'),
+            pnl_data.get('total_pnl', 'N/A'),
+            pnl_data.get('unrealized_profits', 'N/A'),
+            pnl_data.get('avg_duration', 'N/A'),
+            pnl_data.get('total_cost', 'N/A'),
+            pnl_data.get('token_avg_cost', 'N/A'),
+            pnl_data.get('realized_profits', 'N/A')
         ]
         values.append(row_values)
     
