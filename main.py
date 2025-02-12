@@ -18,9 +18,9 @@ CONFIG = {
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
-        'col_d': ['not-italic text-neutral7 text-[14px] leading-[24px] font-bold','not-italic text-neutral7 text-[14px] leading-[24px] font-bold','not-italic text-neutral7 text-[14px] leading-[24px] font-bold'],
-        'col_e': ['not-italic text-neutral7 text-[14px] leading-[24px] font-bold','not-italic text-neutral7 text-[14px] leading-[24px] font-bold','not-italic text-neutral7 text-[14px] leading-[24px] font-bold'],
-        'col_f': ['not-italic text-neutral7 text-[14px] leading-[24px] font-bold','not-italic text-neutral7 text-[14px] leading-[24px] font-bold','not-italic text-neutral7 text-[14px] leading-[24px] font-bold']
+        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
+        'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
+        'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     }
 }
 
@@ -135,7 +135,7 @@ async def main():
 
         for i in range(0, CONFIG["TOTAL_URLS"], CONFIG["MAX_CONCURRENT_PAGES"]):
             start = CONFIG["START_ROW"] + i
-            urls = [sheet.cell(start + j, 1).value for j in range(CONFIG["MAX_CONCURRENT_PAGES"])]
+            urls = [sheet.cell(start + j, 3).value for j in range(CONFIG["MAX_CONCURRENT_PAGES"])]
             urls = [url for url in urls if url and url.startswith('http')]
             if not urls:
                 continue
