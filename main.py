@@ -20,7 +20,8 @@ CONFIG = {
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
-        'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
+        'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m'],
+        'col_g': ['css-vmc5im', 'css-wob81f']
     }
 }
 
@@ -147,10 +148,11 @@ async def main():
                 col_d_val = ', '.join(clean_numeric_values(res.get('col_d', [])[:3]))
                 col_e_val = ', '.join(clean_numeric_values(res.get('col_e', [])[:3]))
                 col_f_val = ', '.join(clean_numeric_values(res.get('col_f', [])[:3]))
-                values.append([col_d_val, col_e_val, col_f_val])
+                col_g_val = ', '.join(clean_numeric_values(res.get('col_g', [])[:3]))
+                values.append([col_d_val, col_e_val, col_f_val, col_g_val])
 
             sheet.update(
-                range_name=f'D{start}:F{start + len(values) - 1}', 
+                range_name=f'D{start}:G{start + len(values) - 1}', 
                 values=values, 
                 value_input_option='USER_ENTERED'
             )
