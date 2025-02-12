@@ -63,60 +63,60 @@ def parse_pnl_block(text):
     }
     
     try:
-        # Разбиваем на строки и очищаем
+        # Разбиваем текст на строки и очищаем
         lines = [line.strip() for line in text.split('\n') if line.strip()]
-        logging.info(f"Split lines: {lines}")
-
-        # Поиск TXs чисел (первые два числа после 7DTXs)
+        
+        # Ищем значения TXs (первые два числа)
         for i, line in enumerate(lines):
-            if '7DTXs' in line:
-                # Ищем следующие две строки с числами
+            if i < len(lines) - 1 and lines[i].strip() == '7D TXs':
                 numbers = []
-                for j in range(i+1, min(i+5, len(lines))):
-                    if lines[j].isdigit():
-                        numbers.append(lines[j])
-                    if len(numbers) == 2:
-                        break
+                current_index = i + 1
+                while current_index < len(lines) and len(numbers) < 2:
+                    if lines[current_index].strip().isdigit():
+                        numbers.append(lines[current_index].strip())
+                    current_index += 1
                 if len(numbers) >= 2:
-                    values['g'] = numbers[0]
-                    values['h'] = numbers[1]
+                    values['g'] = numbers[0]  # Первое число
+                    values['h'] = numbers[1]  # Второе число
                 break
 
-        # Поиск TotalPnL
+        # Ищем Total PnL
         for i, line in enumerate(lines):
-            if 'TotalPnL' in line:
-                next_line = lines[i+1] if i+1 < len(lines) else ''
-                pnl_match = re.search(r'([\d.]+K?M?)\s*\(([-\d.]+)%\)', next_line)
-                if pnl_match:
-                    values['i'] = pnl_match.group(1)
-                    values['j'] = pnl_match.group(2)
+            if line.strip() == 'Total PnL':
+                if i + 1 < len(lines):
+                    pnl_line = lines[i + 1]
+                    # Извлекаем сумму и процент
+                    pnl_match = re.match(r'[\+\-]?\$?([\d,.]+[KM]?)\s*\(([\d.]+)%\)', pnl_line)
+                    if pnl_match:
+                        values['i'] = pnl_match.group(1)  # Сумма
+                        values['j'] = pnl_match.group(2)  # Процент
                 break
 
-        # Поиск UnrealizedProfits
+        # Ищем Unrealized Profits
         for i, line in enumerate(lines):
-            if 'UnrealizedProfits' in line:
-                next_line = lines[i+1] if i+1 < len(lines) else ''
-                if next_line:
-                    values['k'] = re.search(r'([\d.]+K?M?)', next_line).group(1)
-                break
+            if line.strip() == 'Unrealized Profits':
+                if i + 1 < len(lines):
+                    unr_line = lines[i + 1].replace('$', '').replace(',', '')
+                    if unr_line.strip() != '--':
+                        values['k'] = unr_line
 
-        # Поиск 7DTotalCost
+        # Ищем 7D Total Cost
         for i, line in enumerate(lines):
-            if '7DTotalCost' in line:
-                next_line = lines[i+1] if i+1 < len(lines) else ''
-                if next_line:
-                    values['l'] = re.search(r'([\d.]+K?M?)', next_line).group(1)
-                break
+            if line.strip() == '7D Total Cost':
+                if i + 1 < len(lines):
+                    cost_line = lines[i + 1].replace('$', '').replace(',', '')
+                    if cost_line.strip() != '--':
+                        values['l'] = cost_line
 
-        # Поиск RealizedProfits (последнее число)
+        # Ищем 7D Token Avg Realized Profits (последнее значение)
         for i, line in enumerate(lines):
-            if '7DTokenAvgRealizedProfits' in line:
-                next_line = lines[i+1] if i+1 < len(lines) else ''
-                if next_line:
-                    values['m'] = re.search(r'([-\d,.]+)', next_line).group(1)
-                break
+            if line.strip() == '7D Token Avg Realized Profits':
+                if i + 1 < len(lines):
+                    profit_line = lines[i + 1].replace('$', '').replace(',', '')
+                    if profit_line.strip() != '--':
+                        values['m'] = profit_line
 
-        logging.info(f"Extracted values: {values}")
+        logging.info(f"Extracted PnL values: {values}")
         return values
 
     except Exception as e:
