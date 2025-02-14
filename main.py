@@ -25,9 +25,9 @@ CONFIG = {
     "CREDS_FILE": "temp_key.json",
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 10,  # Увеличил задержку между запросами
-    "PAGE_LOAD_DELAY": 5,  # Задержка после загрузки страницы
-    "MAX_CONCURRENT_PAGES": 5,  # Уменьшил количество одновременных запросов
+    "REQUEST_DELAY": 10,
+    "PAGE_LOAD_DELAY": 5,
+    "MAX_CONCURRENT_PAGES": 5,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
@@ -59,50 +59,69 @@ def extract_pnl_values(text):
         lines = [line.strip() for line in lines if line.strip()]
         logger.info(f"Split lines: {lines}")
 
-        # Ищем 7D TXs числа
+        # Ищем первые два числа после "7D TXs"
+        tx_found = False
         tx_numbers = []
-        for line in lines:
-            if line.isdigit():
-                tx_numbers.append(line)
-            if len(tx_numbers) == 2:
-                break
+        for i, line in enumerate(lines):
+            if '7D TXs' in line:
+                tx_found = True
+                continue
+            if tx_found and len(tx_numbers) < 2:
+                if line.isdigit():
+                    tx_numbers.append(line)
         if len(tx_numbers) >= 2:
             values[0] = tx_numbers[0]
             values[1] = tx_numbers[1]
 
-        # Ищем Total PnL
+        # Ищем Total PnL значения
         for i, line in enumerate(lines):
-            if 'TotalPnL' in line and i + 1 < len(lines):
-                pnl_line = lines[i + 1]
-                pnl_match = re.match(r'[\+\-]?\$?([\d,.]+K?M?)\s*\(([-\+]?[\d.]+)%\)', pnl_line)
+            if 'Total PnL' in line and i + 1 < len(lines):
+                next_line = lines[i + 1]
+                # Ищем сумму и процент
+                pnl_match = re.match(r'[\+\-]?\$?([\d,.]+K?M?)\s*\(([-\+]?[\d.]+)%\)', next_line)
                 if pnl_match:
-                    values[2] = pnl_match.group(1)
-                    values[3] = f"{pnl_match.group(2)}%"
+                    values[2] = pnl_match.group(1)  # Сумма с K/M
+                    values[3] = pnl_match.group(2) + '%'  # Процент с %
 
         # Ищем Unrealized Profits
         for i, line in enumerate(lines):
             if 'UnrealizedProfits' in line and i + 1 < len(lines):
-                unr_line = lines[i + 1]
-                values[4] = unr_line.replace('$', '')
+                next_line = lines[i + 1]
+                if next_line.startswith('$'):
+                    next_line = next_line[1:]  # Убираем символ доллара
+                if next_line.startswith('-$'):
+                    next_line = '-' + next_line[2:]  # Преобразуем -$ в просто минус
+                values[4] = next_line
 
-        # Ищем Duration
+        # Ищем 7D Avg Duration
         for i, line in enumerate(lines):
             if 'Duration' in line and i + 1 < len(lines):
-                dur_line = lines[i + 1]
-                values[5] = dur_line
+                next_line = lines[i + 1]
+                if any(unit in next_line for unit in ['d', 'h', 'm', 's']):
+                    values[5] = next_line
 
-        # Ищем Total Cost
+        # Ищем 7D Total Cost
         for i, line in enumerate(lines):
             if 'TotalCost' in line and i + 1 < len(lines):
-                cost_line = lines[i + 1]
-                values[6] = cost_line.replace('$', '')
+                next_line = lines[i + 1]
+                if next_line.startswith('$'):
+                    next_line = next_line[1:]  # Убираем символ доллара
+                if next_line.startswith('-$'):
+                    next_line = '-' + next_line[2:]  # Преобразуем -$ в просто минус
+                values[6] = next_line
+
+        # Проверяем все значения
+        all_valid = all(v != 'N/A' for v in values[:4])  # Проверяем только критические значения
+        if not all_valid:
+            logger.warning("Not all critical values were extracted successfully")
+            return None
 
         logger.info(f"Extracted values: {values}")
         return values
 
     except Exception as e:
         logger.error(f"Error parsing PnL block: {e}")
-        return values
+        return None
 
 async def setup_browser():
     logger.info("Setting up browser")
@@ -128,8 +147,8 @@ async def parse_data(url, browser, error_attempt=1):
     page = await context.new_page()
 
     try:
-        await page.goto(url, wait_until="networkidle")  # Ждем пока страница полностью загрузится
-        await asyncio.sleep(CONFIG["PAGE_LOAD_DELAY"])  # Дополнительная задержка
+        await page.goto(url, wait_until="networkidle")
+        await asyncio.sleep(CONFIG["PAGE_LOAD_DELAY"])
 
         results = {
             'col_d': ["N/A"],
@@ -142,7 +161,7 @@ async def parse_data(url, browser, error_attempt=1):
         for col in ['col_d', 'col_e', 'col_f']:
             for selector in CONFIG["TARGET_CLASSES"][col]:
                 try:
-                    element = await page.wait_for_selector(f'.{selector}', timeout=10000)  # Увеличил таймаут
+                    element = await page.wait_for_selector(f'.{selector}', timeout=10000)
                     if element:
                         text = await element.inner_text()
                         results[col] = [text]
@@ -153,14 +172,19 @@ async def parse_data(url, browser, error_attempt=1):
 
         # Парсим PnL блок
         try:
-            pnl_element = await page.wait_for_selector('.css-1ug9me3', timeout=10000)  # Увеличил таймаут
+            pnl_element = await page.wait_for_selector('.css-1ug9me3', timeout=10000)
             if pnl_element:
                 pnl_text = await pnl_element.inner_text()
                 if pnl_text:
-                    results['pnl_values'] = extract_pnl_values(pnl_text)
-                    logger.info(f"PnL values: {results['pnl_values']}")
+                    pnl_values = extract_pnl_values(pnl_text)
+                    if pnl_values:
+                        results['pnl_values'] = pnl_values
+                    else:
+                        logger.warning("Failed to extract PnL values, will retry")
+                        return None
         except Exception as e:
             logger.error(f"Error parsing PnL block: {e}")
+            return None
 
         return results
 
@@ -176,9 +200,12 @@ async def parse_data(url, browser, error_attempt=1):
 async def process_single_url(url, browser):
     for attempt in range(CONFIG["MAX_NA_RETRIES"]):
         result = await parse_data(url, browser)
-        if result and any(val != "N/A" for val in result['pnl_values']):
+        if result and all(v != 'N/A' for v in result['pnl_values'][:4]):  # Проверяем только критические значения
             return result
+        logger.info(f"Attempt {attempt + 1} failed, retrying after delay...")
         await asyncio.sleep(CONFIG["REQUEST_DELAY"])
+    
+    logger.warning(f"Failed to get valid data after {CONFIG['MAX_NA_RETRIES']} attempts")
     return {
         'col_d': ["N/A"],
         'col_e': ["N/A"],
@@ -188,12 +215,11 @@ async def process_single_url(url, browser):
 
 async def process_urls(urls, browser):
     logger.info(f"Processing {len(urls)} URLs")
-    # Обрабатываем URLs последовательно
     results = []
     for url in urls:
         result = await process_single_url(url, browser)
         results.append(result)
-        await asyncio.sleep(CONFIG["REQUEST_DELAY"])  # Задержка между запросами
+        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
     
     values = []
     for res in results:
@@ -253,7 +279,7 @@ async def main():
                 )
                 logger.info(f"Updated {len(values)} rows")
 
-            await asyncio.sleep(CONFIG["REQUEST_DELAY"])  # Задержка между батчами
+            await asyncio.sleep(CONFIG["REQUEST_DELAY"])
 
         await browser.close()
         await playwright.stop()
