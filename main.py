@@ -69,6 +69,8 @@ def extract_pnl_values(text):
             if tx_found and len(tx_numbers) < 2:
                 if line.isdigit():
                     tx_numbers.append(line)
+                elif line == '/':
+                    continue
         if len(tx_numbers) >= 2:
             values[0] = tx_numbers[0]
             values[1] = tx_numbers[1]
@@ -77,51 +79,52 @@ def extract_pnl_values(text):
         for i, line in enumerate(lines):
             if 'Total PnL' in line and i + 1 < len(lines):
                 next_line = lines[i + 1]
-                # Ищем сумму и процент
-                pnl_match = re.match(r'[\+\-]?\$?([\d,.]+K?M?)\s*\(([-\+]?[\d.]+)%\)', next_line)
-                if pnl_match:
-                    values[2] = pnl_match.group(1)  # Сумма с K/M
-                    values[3] = pnl_match.group(2) + '%'  # Процент с %
+                # Извлекаем сумму и процент отдельно
+                pnl_parts = next_line.split('(')
+                if len(pnl_parts) == 2:
+                    # Обрабатываем сумму
+                    amount = pnl_parts[0].strip().replace('$', '').replace('+', '')
+                    values[2] = amount
+                    # Обрабатываем процент
+                    percent = pnl_parts[1].strip().rstrip(')')
+                    if percent.endswith('%'):
+                        values[3] = percent
+                    else:
+                        values[3] = percent + '%'
 
         # Ищем Unrealized Profits
         for i, line in enumerate(lines):
             if 'UnrealizedProfits' in line and i + 1 < len(lines):
                 next_line = lines[i + 1]
                 if next_line.startswith('$'):
-                    next_line = next_line[1:]  # Убираем символ доллара
-                if next_line.startswith('-$'):
-                    next_line = '-' + next_line[2:]  # Преобразуем -$ в просто минус
+                    next_line = next_line[1:]  # Убираем первый символ $
+                elif next_line.startswith('-$'):
+                    next_line = '-' + next_line[2:]  # Обрабатываем отрицательные значения
                 values[4] = next_line
 
-        # Ищем 7D Avg Duration
+        # Ищем Duration
         for i, line in enumerate(lines):
             if 'Duration' in line and i + 1 < len(lines):
                 next_line = lines[i + 1]
                 if any(unit in next_line for unit in ['d', 'h', 'm', 's']):
                     values[5] = next_line
 
-        # Ищем 7D Total Cost
+        # Ищем TotalCost
         for i, line in enumerate(lines):
             if 'TotalCost' in line and i + 1 < len(lines):
                 next_line = lines[i + 1]
                 if next_line.startswith('$'):
                     next_line = next_line[1:]  # Убираем символ доллара
-                if next_line.startswith('-$'):
-                    next_line = '-' + next_line[2:]  # Преобразуем -$ в просто минус
+                elif next_line.startswith('-$'):
+                    next_line = '-' + next_line[2:]  # Обрабатываем отрицательные значения
                 values[6] = next_line
-
-        # Проверяем все значения
-        all_valid = all(v != 'N/A' for v in values[:4])  # Проверяем только критические значения
-        if not all_valid:
-            logger.warning("Not all critical values were extracted successfully")
-            return None
 
         logger.info(f"Extracted values: {values}")
         return values
 
     except Exception as e:
         logger.error(f"Error parsing PnL block: {e}")
-        return None
+        return values
 
 async def setup_browser():
     logger.info("Setting up browser")
