@@ -25,11 +25,11 @@ CONFIG = {
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 5,
-    "MAX_CONCURRENT_PAGES": 1,
+    "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
-        'col_d': ['css-1ug9me3', 'css-1ug9me3', 'css-1ug9me3'],
+        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m'],
         'pnl_block': 'css-1ug9me3'
@@ -48,80 +48,39 @@ PROXIES = []
 def clean_numeric_values(data_list):
     return [item.strip().replace('+', '').replace(' ', '').replace('$', '').replace('€', '').replace('£', '') for item in data_list]
 
-def parse_pnl_block(text):
-    """Извлекает числовые значения из PnL блока"""
-    logging.info(f"Starting to parse PnL block. Raw text: {text}")
+def extract_pnl_values(text):
+    """Извлекает числовые значения из текста PnL"""
+    values = []
     
-    values = {
-        'g': 'N/A',
-        'h': 'N/A',
-        'i': 'N/A',
-        'j': 'N/A',
-        'k': 'N/A',
-        'l': 'N/A',
-        'm': 'N/A'
-    }
+    # Разбиваем текст на строки
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
     
-    try:
-        # Разбиваем текст на строки и очищаем
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
+    number_pattern = r'-?[\d,.]+'
+    value_found = False
+    
+    for line in lines:
+        # Пропускаем нечисловые строки
+        if 'PnL' in line or 'TXs' in line or '/' in line or 'Total' in line or 'Unrealized' in line or 'Duration' in line or 'Cost' in line or 'Profits' in line:
+            continue
         
-        # Ищем значения TXs (первые два числа)
-        for i, line in enumerate(lines):
-            if i < len(lines) - 1 and lines[i].strip() == '7D TXs':
-                numbers = []
-                current_index = i + 1
-                while current_index < len(lines) and len(numbers) < 2:
-                    if lines[current_index].strip().isdigit():
-                        numbers.append(lines[current_index].strip())
-                    current_index += 1
-                if len(numbers) >= 2:
-                    values['g'] = numbers[0]  # Первое число
-                    values['h'] = numbers[1]  # Второе число
-                break
-
-        # Ищем Total PnL
-        for i, line in enumerate(lines):
-            if line.strip() == 'Total PnL':
-                if i + 1 < len(lines):
-                    pnl_line = lines[i + 1]
-                    # Извлекаем сумму и процент
-                    pnl_match = re.match(r'[\+\-]?\$?([\d,.]+[KM]?)\s*\(([\d.]+)%\)', pnl_line)
-                    if pnl_match:
-                        values['i'] = pnl_match.group(1)  # Сумма
-                        values['j'] = pnl_match.group(2)  # Процент
-                break
-
-        # Ищем Unrealized Profits
-        for i, line in enumerate(lines):
-            if line.strip() == 'Unrealized Profits':
-                if i + 1 < len(lines):
-                    unr_line = lines[i + 1].replace('$', '').replace(',', '')
-                    if unr_line.strip() != '--':
-                        values['k'] = unr_line
-
-        # Ищем 7D Total Cost
-        for i, line in enumerate(lines):
-            if line.strip() == '7D Total Cost':
-                if i + 1 < len(lines):
-                    cost_line = lines[i + 1].replace('$', '').replace(',', '')
-                    if cost_line.strip() != '--':
-                        values['l'] = cost_line
-
-        # Ищем 7D Token Avg Realized Profits (последнее значение)
-        for i, line in enumerate(lines):
-            if line.strip() == '7D Token Avg Realized Profits':
-                if i + 1 < len(lines):
-                    profit_line = lines[i + 1].replace('$', '').replace(',', '')
-                    if profit_line.strip() != '--':
-                        values['m'] = profit_line
-
-        logging.info(f"Extracted PnL values: {values}")
-        return values
-
-    except Exception as e:
-        logging.error(f"Error parsing PnL block: {e}")
-        return values
+        # Ищем числа в строке
+        matches = re.findall(number_pattern, line)
+        if matches:
+            for match in matches:
+                value = match.strip(',%')
+                if value:
+                    values.append(value)
+                    value_found = True
+    
+    # Если числа не найдены, возвращаем N/A
+    if not value_found:
+        return ['N/A'] * 7
+    
+    # Заполняем недостающие значения
+    while len(values) < 7:
+        values.append('N/A')
+    
+    return values[:7]  # Возвращаем только первые 7 значений
 
 def is_valid_result(result):
     error_markers = {"N/A", "--%", "0%", "0"}
@@ -144,11 +103,7 @@ async def setup_browser():
     return browser, playwright
 
 async def parse_data(url, browser, error_attempt=1):
-    logging.info(f"Starting to parse URL: {url}")
-    context_args = {
-        "user_agent": random.choice(USER_AGENTS)
-    }
-
+    context_args = {"user_agent": random.choice(USER_AGENTS)}
     if PROXIES:
         context_args["proxy"] = {"server": random.choice(PROXIES)}
 
@@ -163,7 +118,7 @@ async def parse_data(url, browser, error_attempt=1):
             'col_d': ["N/A"],
             'col_e': ["N/A"],
             'col_f': ["N/A"],
-            'pnl_values': {}
+            'pnl_values': []
         }
 
         # Парсим базовые колонки
@@ -181,23 +136,14 @@ async def parse_data(url, browser, error_attempt=1):
 
         # Парсим PnL блок
         try:
-            await page.wait_for_selector('.css-1ug9me3', timeout=5000)
-            pnl_elements = await page.query_selector_all('.css-1ug9me3')
-            
-            if pnl_elements:
-                logging.info(f"Found {len(pnl_elements)} PnL elements")
-                for i, el in enumerate(pnl_elements):
-                    text = await el.inner_text()
-                    logging.info(f"PnL element {i} text: {text}")
-                    if '7DTXs' in text:  # Берем только нужный блок
-                        results['pnl_values'] = parse_pnl_block(text)
-                        break
-            else:
-                logging.warning("No PnL elements found")
-                results['pnl_values'] = {k: 'N/A' for k in 'ghijklm'}
+            pnl_element = await page.query_selector('.css-1ug9me3')
+            if pnl_element:
+                pnl_text = await pnl_element.inner_text()
+                if pnl_text:
+                    results['pnl_values'] = extract_pnl_values(pnl_text)
+                    logging.info(f"Extracted PnL values: {results['pnl_values']}")
         except Exception as e:
             logging.error(f"Error getting PnL block: {e}")
-            results['pnl_values'] = {k: 'N/A' for k in 'ghijklm'}
 
         return results
 
@@ -211,7 +157,7 @@ async def parse_data(url, browser, error_attempt=1):
                 'col_d': ["FAIL"],
                 'col_e': ["FAIL"],
                 'col_f': ["FAIL"],
-                'pnl_values': {k: 'FAIL' for k in 'ghijklm'}
+                'pnl_values': ['N/A'] * 7
             }
     finally:
         await context.close()
@@ -230,18 +176,11 @@ async def process_urls(urls, browser):
     
     values = []
     for res in results_list:
-        pnl_vals = res.get('pnl_values', {})
         row_values = [
             ', '.join(clean_numeric_values(res.get('col_d', [])[:3])),
             ', '.join(clean_numeric_values(res.get('col_e', [])[:3])),
             ', '.join(clean_numeric_values(res.get('col_f', [])[:3])),
-            pnl_vals.get('g', 'N/A'),
-            pnl_vals.get('h', 'N/A'),
-            pnl_vals.get('i', 'N/A'),
-            pnl_vals.get('j', 'N/A'),
-            pnl_vals.get('k', 'N/A'),
-            pnl_vals.get('l', 'N/A'),
-            pnl_vals.get('m', 'N/A')
+            *(res.get('pnl_values', ['N/A'] * 7))  # Распаковываем все 7 значений из PnL
         ]
         logging.info(f"Prepared row values: {row_values}")
         values.append(row_values)
