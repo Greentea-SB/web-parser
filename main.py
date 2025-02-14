@@ -25,11 +25,11 @@ CONFIG = {
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 5,
-    "MAX_CONCURRENT_PAGES": 10,
+    "MAX_CONCURRENT_PAGES": 1,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
-        'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
+        'col_d': ['css-1ug9me3', 'css-1ug9me3', 'css-1ug9me3'],
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m'],
         'pnl_block': 'css-1ug9me3'
