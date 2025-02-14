@@ -25,8 +25,9 @@ CONFIG = {
     "CREDS_FILE": "temp_key.json",
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 5,
-    "MAX_CONCURRENT_PAGES": 5,
+    "REQUEST_DELAY": 10,  # Увеличил задержку между запросами
+    "PAGE_LOAD_DELAY": 5,  # Задержка после загрузки страницы
+    "MAX_CONCURRENT_PAGES": 5,  # Уменьшил количество одновременных запросов
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
@@ -58,54 +59,43 @@ def extract_pnl_values(text):
         lines = [line.strip() for line in lines if line.strip()]
         logger.info(f"Split lines: {lines}")
 
-        current_section = None
-        number_values = []
-
+        # Ищем 7D TXs числа
+        tx_numbers = []
         for line in lines:
-            if 'TXs' in line:
-                current_section = 'txs'
-                continue
-            elif 'TotalPnL' in line:
-                current_section = 'pnl'
-                continue
-            elif 'UnrealizedProfits' in line:
-                current_section = 'unrealized'
-                continue
-            elif 'Duration' in line:
-                current_section = 'duration'
-                continue
-            elif 'TotalCost' in line:
-                current_section = 'cost'
-                continue
-            elif 'RealizedProfits' in line:
-                current_section = 'realized'
-                continue
+            if line.isdigit():
+                tx_numbers.append(line)
+            if len(tx_numbers) == 2:
+                break
+        if len(tx_numbers) >= 2:
+            values[0] = tx_numbers[0]
+            values[1] = tx_numbers[1]
 
-            if current_section == 'txs' and line.isdigit():
-                number_values.append(line)
-                if len(number_values) <= 2:
-                    values[len(number_values)-1] = line
-
-            elif current_section == 'pnl':
-                pnl_match = re.match(r'[\+\-]?\$?([\d,.]+K?M?)\s*\(([-\+]?[\d.]+)%\)', line)
+        # Ищем Total PnL
+        for i, line in enumerate(lines):
+            if 'TotalPnL' in line and i + 1 < len(lines):
+                pnl_line = lines[i + 1]
+                pnl_match = re.match(r'[\+\-]?\$?([\d,.]+K?M?)\s*\(([-\+]?[\d.]+)%\)', pnl_line)
                 if pnl_match:
                     values[2] = pnl_match.group(1)
                     values[3] = f"{pnl_match.group(2)}%"
 
-            elif current_section == 'unrealized':
-                unr_match = re.match(r'[\+\-]?\$?([\d,.]+K?M?)', line)
-                if unr_match:
-                    values[4] = unr_match.group(1)
+        # Ищем Unrealized Profits
+        for i, line in enumerate(lines):
+            if 'UnrealizedProfits' in line and i + 1 < len(lines):
+                unr_line = lines[i + 1]
+                values[4] = unr_line.replace('$', '')
 
-            elif current_section == 'duration':
-                dur_match = re.match(r'([\d.]+[dhm])', line)
-                if dur_match:
-                    values[5] = dur_match.group(1)
+        # Ищем Duration
+        for i, line in enumerate(lines):
+            if 'Duration' in line and i + 1 < len(lines):
+                dur_line = lines[i + 1]
+                values[5] = dur_line
 
-            elif current_section == 'cost':
-                cost_match = re.match(r'[\+\-]?\$?([\d,.]+K?M?)', line)
-                if cost_match:
-                    values[6] = cost_match.group(1)
+        # Ищем Total Cost
+        for i, line in enumerate(lines):
+            if 'TotalCost' in line and i + 1 < len(lines):
+                cost_line = lines[i + 1]
+                values[6] = cost_line.replace('$', '')
 
         logger.info(f"Extracted values: {values}")
         return values
@@ -138,12 +128,8 @@ async def parse_data(url, browser, error_attempt=1):
     page = await context.new_page()
 
     try:
-        response = await page.goto(url, wait_until="domcontentloaded")
-        if not response:
-            logger.error(f"Failed to load page: {url}")
-            return None
-        
-        await asyncio.sleep(random.uniform(1.0, 2.5))
+        await page.goto(url, wait_until="networkidle")  # Ждем пока страница полностью загрузится
+        await asyncio.sleep(CONFIG["PAGE_LOAD_DELAY"])  # Дополнительная задержка
 
         results = {
             'col_d': ["N/A"],
@@ -156,7 +142,7 @@ async def parse_data(url, browser, error_attempt=1):
         for col in ['col_d', 'col_e', 'col_f']:
             for selector in CONFIG["TARGET_CLASSES"][col]:
                 try:
-                    element = await page.wait_for_selector(f'.{selector}', timeout=5000)
+                    element = await page.wait_for_selector(f'.{selector}', timeout=10000)  # Увеличил таймаут
                     if element:
                         text = await element.inner_text()
                         results[col] = [text]
@@ -167,7 +153,7 @@ async def parse_data(url, browser, error_attempt=1):
 
         # Парсим PnL блок
         try:
-            pnl_element = await page.wait_for_selector('.css-1ug9me3', timeout=5000)
+            pnl_element = await page.wait_for_selector('.css-1ug9me3', timeout=10000)  # Увеличил таймаут
             if pnl_element:
                 pnl_text = await pnl_element.inner_text()
                 if pnl_text:
@@ -188,24 +174,29 @@ async def parse_data(url, browser, error_attempt=1):
         await context.close()
 
 async def process_single_url(url, browser):
-    result = await parse_data(url, browser)
-    if not result:
-        logger.error(f"Failed to process URL: {url}")
-        return {
-            'col_d': ["N/A"],
-            'col_e': ["N/A"],
-            'col_f': ["N/A"],
-            'pnl_values': ['N/A'] * 7
-        }
-    return result
+    for attempt in range(CONFIG["MAX_NA_RETRIES"]):
+        result = await parse_data(url, browser)
+        if result and any(val != "N/A" for val in result['pnl_values']):
+            return result
+        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
+    return {
+        'col_d': ["N/A"],
+        'col_e': ["N/A"],
+        'col_f': ["N/A"],
+        'pnl_values': ['N/A'] * 7
+    }
 
 async def process_urls(urls, browser):
     logger.info(f"Processing {len(urls)} URLs")
-    tasks = [process_single_url(url, browser) for url in urls]
-    results_list = await asyncio.gather(*tasks)
+    # Обрабатываем URLs последовательно
+    results = []
+    for url in urls:
+        result = await process_single_url(url, browser)
+        results.append(result)
+        await asyncio.sleep(CONFIG["REQUEST_DELAY"])  # Задержка между запросами
     
     values = []
-    for res in results_list:
+    for res in results:
         if res:
             row_values = [
                 ', '.join(clean_numeric_values(res.get('col_d', [])[:3])),
@@ -225,11 +216,9 @@ async def main():
         if not encoded_creds:
             raise ValueError("GOOGLE_CREDENTIALS_BASE64 not set")
 
-        # Сохраняем credentials
         with open(CONFIG["CREDS_FILE"], 'w') as f:
             f.write(base64.b64decode(encoded_creds).decode('utf-8'))
 
-        # Подключаемся к Google Sheets
         gc = gspread.authorize(
             ServiceAccountCredentials.from_json_keyfile_name(
                 CONFIG["CREDS_FILE"],
@@ -264,7 +253,7 @@ async def main():
                 )
                 logger.info(f"Updated {len(values)} rows")
 
-            await asyncio.sleep(random.uniform(3, 7))
+            await asyncio.sleep(CONFIG["REQUEST_DELAY"])  # Задержка между батчами
 
         await browser.close()
         await playwright.stop()
