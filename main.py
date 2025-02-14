@@ -46,40 +46,73 @@ USER_AGENTS = [
 PROXIES = []
 
 def clean_numeric_values(data_list):
-    return [item.strip().replace('+', '').replace(' ', '').replace('$', '').replace('€', '').replace('£', '') for item in data_list]
+    return [item.strip() for item in data_list]
 
 def extract_pnl_values(text):
-    """Извлекает числовые значения из текста PnL"""
+    """Извлекает значения из текста PnL с сохранением форматирования"""
     values = []
     
     # Разбиваем текст на строки
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     
-    number_pattern = r'-?[\d,.]+'
-    value_found = False
+    try:
+        # Ищем первые два числа (TXs)
+        tx_numbers = []
+        for line in lines:
+            if line.isdigit():
+                tx_numbers.append(line)
+                if len(tx_numbers) == 2:
+                    break
+        values.extend(tx_numbers[:2])
+
+        # Ищем Total PnL (два значения - сумма и процент)
+        for i, line in enumerate(lines):
+            if 'TotalPnL' in line and i + 1 < len(lines):
+                pnl_line = lines[i + 1]
+                # Извлекаем сумму и процент отдельно
+                pnl_match = re.match(r'[\+\-]?\$?([\d,.]+K?M?)\s*\(([-\+]?[\d.]+)%\)', pnl_line)
+                if pnl_match:
+                    values.append(pnl_match.group(1))  # Сумма с K/M
+                    values.append(pnl_match.group(2) + '%')  # Процент
+
+        # Ищем Unrealized Profits
+        for i, line in enumerate(lines):
+            if 'UnrealizedProfits' in line and i + 1 < len(lines):
+                unr_line = lines[i + 1]
+                if unr_line.startswith('$'):
+                    unr_line = unr_line[1:]  # Убираем первый символ $
+                values.append(unr_line)  # Сохраняем полное значение
+
+        # Ищем Duration
+        for i, line in enumerate(lines):
+            if 'Duration' in line and i + 1 < len(lines):
+                dur_line = lines[i + 1]
+                values.append(dur_line)  # Сохраняем значение с единицей измерения (d/h/m)
+
+        # Ищем TotalCost
+        for i, line in enumerate(lines):
+            if 'TotalCost' in line and i + 1 < len(lines):
+                cost_line = lines[i + 1]
+                if cost_line.startswith('$'):
+                    cost_line = cost_line[1:]  # Убираем первый символ $
+                values.append(cost_line)
+
+        # Ищем TokenAvgRealizedProfits
+        for i, line in enumerate(lines):
+            if 'RealizedProfits' in line and i + 1 < len(lines):
+                profit_line = lines[i + 1]
+                if profit_line.startswith('$'):
+                    profit_line = profit_line[1:]  # Убираем первый символ $
+                values.append(profit_line)
+
+    except Exception as e:
+        logging.error(f"Error extracting PnL values: {e}")
     
-    for line in lines:
-        # Пропускаем нечисловые строки
-        if 'PnL' in line or 'TXs' in line or '/' in line or 'Total' in line or 'Unrealized' in line or 'Duration' in line or 'Cost' in line or 'Profits' in line:
-            continue
-        
-        # Ищем числа в строке
-        matches = re.findall(number_pattern, line)
-        if matches:
-            for match in matches:
-                value = match.strip(',%')
-                if value:
-                    values.append(value)
-                    value_found = True
-    
-    # Если числа не найдены, возвращаем N/A
-    if not value_found:
-        return ['N/A'] * 7
-    
-    # Заполняем недостающие значения
+    # Если какие-то значения не найдены, заполняем их N/A
     while len(values) < 7:
         values.append('N/A')
     
+    logging.info(f"Extracted PnL values: {values}")
     return values[:7]  # Возвращаем только первые 7 значений
 
 def is_valid_result(result):
@@ -161,80 +194,3 @@ async def parse_data(url, browser, error_attempt=1):
             }
     finally:
         await context.close()
-
-async def process_single_url(url, browser):
-    for na_attempt in range(CONFIG["MAX_NA_RETRIES"]):
-        result = await parse_data(url, browser)
-        if is_valid_result(result):
-            return result
-        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
-    return result
-
-async def process_urls(urls, browser):
-    tasks = [process_single_url(url, browser) for url in urls]
-    results_list = await asyncio.gather(*tasks)
-    
-    values = []
-    for res in results_list:
-        row_values = [
-            ', '.join(clean_numeric_values(res.get('col_d', [])[:3])),
-            ', '.join(clean_numeric_values(res.get('col_e', [])[:3])),
-            ', '.join(clean_numeric_values(res.get('col_f', [])[:3])),
-            *(res.get('pnl_values', ['N/A'] * 7))  # Распаковываем все 7 значений из PnL
-        ]
-        logging.info(f"Prepared row values: {row_values}")
-        values.append(row_values)
-    
-    return values
-
-async def main():
-    logging.info("Starting parser")
-    try:
-        encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
-        if not encoded_creds:
-            raise ValueError("GOOGLE_CREDENTIALS_BASE64 not set")
-        with open(CONFIG["CREDS_FILE"], 'w') as f:
-            f.write(base64.b64decode(encoded_creds).decode('utf-8'))
-
-        gc = gspread.authorize(
-            ServiceAccountCredentials.from_json_keyfile_name(
-                CONFIG["CREDS_FILE"],
-                ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-            )
-        )
-        sheet = gc.open_by_key(CONFIG["SPREADSHEET_ID"]).worksheet(CONFIG["SHEET_NAME"])
-        logging.info("Connected to Google Sheet")
-
-        browser, playwright = await setup_browser()
-        logging.info("Browser setup complete")
-
-        for i in range(0, CONFIG["TOTAL_URLS"], CONFIG["MAX_CONCURRENT_PAGES"]):
-            start = CONFIG["START_ROW"] + i
-            urls = [sheet.cell(start + j, 3).value for j in range(CONFIG["MAX_CONCURRENT_PAGES"])]
-            urls = [url for url in urls if url and url.startswith('http')]
-            if not urls:
-                continue
-
-            logging.info(f"Processing batch of URLs starting at row {start}")
-            values = await process_urls(urls, browser)
-
-            logging.info(f"Updating sheet range D{start}:M{start + len(values) - 1}")
-            sheet.update(
-                range_name=f'D{start}:M{start + len(values) - 1}', 
-                values=values, 
-                value_input_option='USER_ENTERED'
-            )
-
-            await asyncio.sleep(random.uniform(3, 7))
-
-        await browser.close()
-        await playwright.stop()
-        logging.info("Parser finished successfully")
-    except Exception as e:
-        logging.critical(f"Critical error: {str(e)}")
-    finally:
-        if os.path.exists(CONFIG["CREDS_FILE"]):
-            os.remove(CONFIG["CREDS_FILE"])
-
-if __name__ == "__main__":
-    asyncio.run(main())
