@@ -50,14 +50,16 @@ def clean_numeric_values(data_list):
     return [item.strip() for item in data_list]
 
 def extract_value(text):
-    """Очищает значение от символов валюты и знаков"""
+    """Очищает значение от символов валюты и плюсов, сохраняя минусы"""
     if not text or text == 'N/A':
         return text
     value = text.strip()
+    # Удаляем '+$' или '$' в начале
     if value.startswith('+$'):
         value = value[2:]
     elif value.startswith('$'):
         value = value[1:]
+    # Удаляем просто '+' в начале, но сохраняем '-'
     elif value.startswith('+'):
         value = value[1:]
     return value
@@ -94,11 +96,21 @@ def extract_pnl_values(text):
                 # Ищем сумму
                 amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
                 if amount_match:
-                    values[2] = amount_match.group(1)
+                    pnl_value = amount_match.group(1)
+                    # Проверяем, было ли значение отрицательным в исходной строке
+                    if '-' in pnl_line and pnl_line.index('-') < pnl_line.index(pnl_value):
+                        values[2] = f"-{pnl_value}"
+                    else:
+                        values[2] = pnl_value
+
                 # Ищем процент
                 percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
                 if percent_match:
-                    values[3] = percent_match.group(1) + '%'
+                    percent_value = percent_match.group(1)
+                    # Сохраняем минус, если он есть, но убираем плюс
+                    if percent_value.startswith('+'):
+                        percent_value = percent_value[1:]
+                    values[3] = f"{percent_value}%"
 
         # Словарь соответствия меток и индексов
         label_mapping = {
@@ -111,7 +123,11 @@ def extract_pnl_values(text):
         for i, line in enumerate(lines):
             for label, index in label_mapping.items():
                 if label in line and i + 1 < len(lines):
-                    values[index] = extract_value(lines[i + 1])
+                    value = extract_value(lines[i + 1])
+                    # Для Unrealized Profits и Total Cost проверяем, было ли значение отрицательным
+                    if index in [4, 6] and lines[i + 1].startswith('-'):
+                        value = f"-{value}"
+                    values[index] = value
 
         logger.info(f"Extracted values: {values}")
         return values
