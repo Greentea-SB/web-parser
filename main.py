@@ -49,66 +49,71 @@ PROXIES = []
 def clean_numeric_values(data_list):
     return [item.strip() for item in data_list]
 
+def find_value_after_label(lines, label):
+    for i, line in enumerate(lines):
+        if label in line and i + 1 < len(lines):
+            return lines[i + 1]
+    return None
+
 def extract_pnl_values(text):
     """Извлекает значения из текста PnL с сохранением форматирования"""
     logger.info(f"Raw PnL text: {text}")
-    values = ['N/A'] * 7
+    values = ['N/A'] * 7  # [txs1, txs2, total_pnl, pnl_percent, unrealized, duration, total_cost]
     
     try:
-        lines = text.strip().split('\n')
-        lines = [line.strip() for line in lines if line.strip()]
+        # Разбиваем текст на строки и удаляем пустые
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
         logger.info(f"Split lines: {lines}")
 
-        for i, line in enumerate(lines):
-            # Извлекаем TXs числа
+        # Получаем числа TXs
+        current_section = None
+        tx_numbers = []
+        for line in lines:
             if '7D TXs' in line:
-                numbers = []
-                for j in range(i + 1, len(lines)):
-                    if lines[j].isdigit():
-                        numbers.append(lines[j])
-                    if len(numbers) == 2:
-                        break
-                if len(numbers) >= 2:
-                    values[0] = numbers[0]
-                    values[1] = numbers[1]
+                current_section = 'txs'
+                continue
+            if current_section == 'txs' and line.isdigit():
+                tx_numbers.append(line)
+                if len(tx_numbers) == 2:
+                    values[0] = tx_numbers[0]
+                    values[1] = tx_numbers[1]
+                    break
 
-            # Извлекаем Total PnL
-            elif 'Total PnL' in line and i + 1 < len(lines):
-                pnl_line = lines[i + 1]
-                pnl_match = re.match(r'[\+\-]?\$?([\d,.]+K?M?)\s*\(([-\+]?\d+\.?\d*)%\)', pnl_line)
-                if pnl_match:
-                    values[2] = pnl_match.group(1)
-                    values[3] = pnl_match.group(2) + '%'
+        # Получаем Total PnL и процент
+        total_pnl_line = find_value_after_label(lines, 'Total PnL')
+        if total_pnl_line:
+            # Извлекаем сумму и процент
+            match = re.match(r'[\+\-]?\$?([\d,.]+K?M?)\s*\(([-\+]?\d+\.?\d*)%\)', total_pnl_line)
+            if match:
+                values[2] = match.group(1)  # Сумма
+                values[3] = match.group(2) + '%'  # Процент
 
-            # Извлекаем Unrealized Profits
-            elif 'UnrealizedProfits' in line and i + 1 < len(lines):
-                unr_line = lines[i + 1]
-                if unr_line != '--':
-                    # Убираем $ и оставляем знак минуса если есть
-                    if unr_line.startswith('-$'):
-                        values[4] = '-' + unr_line[2:]
-                    elif unr_line.startswith('$'):
-                        values[4] = unr_line[1:]
-                    else:
-                        values[4] = unr_line
+        # Получаем Unrealized Profits
+        unrealized_line = find_value_after_label(lines, 'UnrealizedProfits')
+        if unrealized_line:
+            # Убираем знак доллара и обрабатываем отрицательные значения
+            if unrealized_line.startswith('-$'):
+                values[4] = '-' + unrealized_line[2:]
+            elif unrealized_line.startswith('$'):
+                values[4] = unrealized_line[1:]
+            else:
+                values[4] = unrealized_line
 
-            # Извлекаем Duration
-            elif 'Duration' in line and i + 1 < len(lines):
-                dur_line = lines[i + 1]
-                if dur_line != '--':
-                    values[5] = dur_line
+        # Получаем Duration
+        duration_line = find_value_after_label(lines, 'Duration')
+        if duration_line:
+            values[5] = duration_line
 
-            # Извлекаем Total Cost
-            elif 'TotalCost' in line and i + 1 < len(lines):
-                cost_line = lines[i + 1]
-                if cost_line != '--':
-                    # Убираем $ и оставляем знак минуса если есть
-                    if cost_line.startswith('-$'):
-                        values[6] = '-' + cost_line[2:]
-                    elif cost_line.startswith('$'):
-                        values[6] = cost_line[1:]
-                    else:
-                        values[6] = cost_line
+        # Получаем Total Cost
+        total_cost_line = find_value_after_label(lines, 'TotalCost')
+        if total_cost_line:
+            # Убираем знак доллара и обрабатываем отрицательные значения
+            if total_cost_line.startswith('-$'):
+                values[6] = '-' + total_cost_line[2:]
+            elif total_cost_line.startswith('$'):
+                values[6] = total_cost_line[1:]
+            else:
+                values[6] = total_cost_line
 
         logger.info(f"Extracted values: {values}")
         return values
@@ -116,7 +121,6 @@ def extract_pnl_values(text):
     except Exception as e:
         logger.error(f"Error parsing PnL block: {e}")
         return values
-
 
 async def setup_browser():
     logger.info("Setting up browser")
@@ -175,7 +179,7 @@ async def parse_data(url, browser, error_attempt=1):
                     if pnl_values:
                         results['pnl_values'] = pnl_values
                     else:
-                        logger.warning("Failed to extract PnL values, will retry")
+                        logger.warning("Failed to extract PnL values")
                         return None
         except Exception as e:
             logger.error(f"Error parsing PnL block: {e}")
@@ -195,12 +199,11 @@ async def parse_data(url, browser, error_attempt=1):
 async def process_single_url(url, browser):
     for attempt in range(CONFIG["MAX_NA_RETRIES"]):
         result = await parse_data(url, browser)
-        if result and all(v != 'N/A' for v in result['pnl_values'][:4]):  # Проверяем только критические значения
+        if result and any(v != 'N/A' for v in result['pnl_values'][:4]):
             return result
         logger.info(f"Attempt {attempt + 1} failed, retrying after delay...")
         await asyncio.sleep(CONFIG["REQUEST_DELAY"])
     
-    logger.warning(f"Failed to get valid data after {CONFIG['MAX_NA_RETRIES']} attempts")
     return {
         'col_d': ["N/A"],
         'col_e': ["N/A"],
