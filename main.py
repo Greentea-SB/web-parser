@@ -28,7 +28,7 @@ CONFIG = {
     "REQUEST_DELAY": 10,
     "PAGE_LOAD_DELAY": 5,
     "MAX_CONCURRENT_PAGES": 5,
-    "START_ROW": 19,
+    "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
@@ -48,11 +48,13 @@ PROXIES = []
 
 def is_valid_number(text):
     """Проверяет, является ли текст числом (включая числа с запятыми)"""
-    # Удаляем запятые и проверяем, является ли оставшаяся часть числом
-    return bool(re.match(r'^-?\d+(?:,\d+)*(?:\.\d+)?$', text.replace(',', '')))
+    text = text.strip()
+    # Паттерн для проверки числа с запятыми, точками или без них
+    pattern = r'^-?\d+(?:,\d+)*(?:\.\d+)?$'
+    return bool(re.match(pattern, text))
 
 def clean_numeric_values(data_list):
-    """Очищает числовые значения от плюсов, сохраняя минусы"""
+    """Очищает числовые значения от плюсов, сохраняя минусы и запятые"""
     cleaned = []
     for item in data_list:
         if isinstance(item, str):
@@ -63,7 +65,7 @@ def clean_numeric_values(data_list):
     return cleaned
 
 def extract_value(text):
-    """Очищает значение от символов валюты и плюсов, сохраняя минусы"""
+    """Очищает значение от символов валюты и плюсов, сохраняя минусы и запятые"""
     if not text or text == 'N/A':
         return text
     value = text.strip()
@@ -88,13 +90,15 @@ def extract_pnl_values(text):
         # Получаем числа TXs
         for i, line in enumerate(lines):
             if '7D TXs' in line:
-                # Ищем числа (включая числа с запятыми) после '7D TXs'
                 tx_values = []
-                for j in range(i + 1, min(i + 5, len(lines))):
-                    if is_valid_number(lines[j]) or lines[j].replace(',', '').isdigit():
-                        tx_values.append(lines[j])
-                    if len(tx_values) == 2:
-                        break
+                j = i + 1
+                while j < len(lines) and len(tx_values) < 2:
+                    current_line = lines[j].strip()
+                    if current_line != '/':  # Пропускаем разделитель
+                        # Сохраняем числа как есть, включая запятые
+                        if re.match(r'^\d+(?:,\d+)*$', current_line):
+                            tx_values.append(current_line)
+                    j += 1
                 if len(tx_values) >= 2:
                     values[0] = tx_values[0]
                     values[1] = tx_values[1]
@@ -252,6 +256,7 @@ async def process_urls(urls, browser):
     values = []
     for res in results:
         if res:
+            # Не преобразуем значения, оставляем их как есть
             row_values = [
                 ', '.join(clean_numeric_values(res.get('col_d', [])[:3])),
                 ', '.join(clean_numeric_values(res.get('col_e', [])[:3])),
@@ -300,10 +305,11 @@ async def main():
             if values:
                 range_name = f'D{start}:M{start + len(values) - 1}'
                 logger.info(f"Updating range {range_name}")
+                # Используем 'RAW' вместо 'USER_ENTERED' для сохранения форматирования
                 sheet.update(
                     range_name=range_name,
                     values=values,
-                    value_input_option='USER_ENTERED'
+                    value_input_option='RAW'
                 )
                 logger.info(f"Updated {len(values)} rows")
 
