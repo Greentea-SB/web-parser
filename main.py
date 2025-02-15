@@ -28,7 +28,7 @@ CONFIG = {
     "REQUEST_DELAY": 10,
     "PAGE_LOAD_DELAY": 5,
     "MAX_CONCURRENT_PAGES": 5,
-    "START_ROW": 14,
+    "START_ROW": 24,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
