@@ -5,9 +5,8 @@ import logging
 import os
 import random
 import re
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError
 from oauth2client.service_account import ServiceAccountCredentials
-from concurrent.futures import ThreadPoolExecutor
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,9 +25,9 @@ CONFIG = {
     "CREDS_FILE": "temp_key.json",
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 2,  # Уменьшено для ускорения
-    "PAGE_LOAD_DELAY": 2,  # Уменьшено для ускорения
-    "BATCH_SIZE": 10,  # Количество URL для одновременной обработки
+    "REQUEST_DELAY": 1,
+    "PAGE_LOAD_DELAY": 1,
+    "BATCH_SIZE": 5,  # Уменьшено количество одновременных запросов
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
@@ -36,7 +35,9 @@ CONFIG = {
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     },
-    "MAX_CONCURRENT_BROWSERS": 5  # Максимальное количество параллельных браузеров
+    "MAX_CONCURRENT_BROWSERS": 3,  # Уменьшено количество браузеров
+    "NAVIGATION_TIMEOUT": 60000,  # Увеличен таймаут до 60 секунд
+    "WAIT_TIMEOUT": 10000  # Таймаут для ожидания элементов
 }
 
 USER_AGENTS = [
@@ -48,102 +49,198 @@ USER_AGENTS = [
 
 PROXIES = []
 
-# ... (все остальные вспомогательные функции остаются без изменений: is_valid_number, clean_numeric_values, extract_value, extract_pnl_values)
+def is_valid_number(text):
+    """Проверяет, является ли текст числом (включая числа с запятыми)"""
+    text = text.strip()
+    pattern = r'^-?\d+(?:,\d+)*(?:\.\d+)?$'
+    return bool(re.match(pattern, text))
+
+def clean_numeric_values(data_list):
+    """Очищает числовые значения от плюсов, сохраняя минусы и запятые"""
+    cleaned = []
+    for item in data_list:
+        if isinstance(item, str):
+            item = item.strip()
+            if item.startswith('+'):
+                item = item[1:]
+        cleaned.append(item)
+    return cleaned
+
+def extract_value(text):
+    """Очищает значение от символов валюты и плюсов, сохраняя минусы и запятые"""
+    if not text or text == 'N/A':
+        return text
+    value = text.strip()
+    if value.startswith('+$'):
+        value = value[2:]
+    elif value.startswith('$'):
+        value = value[1:]
+    elif value.startswith('+'):
+        value = value[1:]
+    return value
+
+def extract_pnl_values(text):
+    """Извлекает значения из текста PnL с сохранением форматирования"""
+    logger.info(f"Raw PnL text: {text}")
+    values = ['N/A'] * 7
+
+    try:
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        logger.info(f"Split lines: {lines}")
+
+        # Получаем числа TXs
+        for i, line in enumerate(lines):
+            if '7D TXs' in line:
+                tx_values = []
+                j = i + 1
+                while j < len(lines) and len(tx_values) < 2:
+                    current_line = lines[j].strip()
+                    if current_line != '/':
+                        if re.match(r'^\d+(?:,\d+)*$', current_line):
+                            tx_values.append(current_line)
+                    j += 1
+                if len(tx_values) >= 2:
+                    values[0] = tx_values[0]
+                    values[1] = tx_values[1]
+                break
+
+        # Получаем Total PnL и процент
+        for i, line in enumerate(lines):
+            if 'Total PnL' in line and i + 1 < len(lines):
+                pnl_line = lines[i + 1]
+                amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
+                if amount_match:
+                    pnl_value = amount_match.group(1)
+                    if '-' in pnl_line and pnl_line.index('-') < pnl_line.index(pnl_value):
+                        values[2] = f"-{pnl_value}"
+                    else:
+                        values[2] = pnl_value
+
+                percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
+                if percent_match:
+                    percent_value = percent_match.group(1)
+                    if percent_value.startswith('+'):
+                        percent_value = percent_value[1:]
+                    values[3] = f"{percent_value}%"
+
+        # Словарь соответствия меток и индексов
+        label_mapping = {
+            'Unrealized Profits': 4,
+            '7D Avg Duration': 5,
+            '7D Total Cost': 6
+        }
+
+        # Получаем остальные значения
+        for i, line in enumerate(lines):
+            for label, index in label_mapping.items():
+                if label in line and i + 1 < len(lines):
+                    next_line = lines[i + 1]
+                    value = extract_value(next_line)
+                    if next_line.startswith('-'):
+                        if value.startswith('-'):
+                            values[index] = value
+                        else:
+                            values[index] = f"-{value}"
+                    else:
+                        values[index] = value
+
+        logger.info(f"Extracted values: {values}")
+        return values
+
+    except Exception as e:
+        logger.error(f"Error parsing PnL block: {e}")
+        return values
 
 async def setup_browser(playwright):
-    """Создает новый браузер"""
+    """Создает новый браузер с оптимизированными настройками"""
     browser = await playwright.chromium.launch(
         headless=True,
         args=[
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process'
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process'
         ]
     )
     return browser
 
-class BrowserPool:
-    def __init__(self, playwright, max_browsers):
-        self.playwright = playwright
-        self.max_browsers = max_browsers
-        self.browsers = []
-        self.semaphore = asyncio.Semaphore(max_browsers)
-        
-    async def get_browser(self):
-        async with self.semaphore:
-            if not self.browsers:
-                browser = await setup_browser(self.playwright)
-                self.browsers.append(browser)
-            return random.choice(self.browsers)
+async def parse_url(url, browser):
+    """Парсит один URL"""
+    context = await browser.new_context(
+        user_agent=random.choice(USER_AGENTS),
+        viewport={'width': 1920, 'height': 1080}
+    )
+    page = await context.new_page()
     
-    async def cleanup(self):
-        for browser in self.browsers:
-            await browser.close()
-        self.browsers.clear()
+    try:
+        # Устанавливаем таймауты
+        page.set_default_navigation_timeout(CONFIG["NAVIGATION_TIMEOUT"])
+        page.set_default_timeout(CONFIG["WAIT_TIMEOUT"])
 
-async def parse_url_with_retry(url, browser_pool):
-    """Парсит один URL с повторными попытками"""
-    for attempt in range(CONFIG["MAX_NA_RETRIES"]):
-        browser = await browser_pool.get_browser()
-        context = await browser.new_context(user_agent=random.choice(USER_AGENTS))
-        page = await context.new_page()
-        
+        # Загружаем страницу с ожиданием загрузки DOM
+        await page.goto(url, wait_until="domcontentloaded")
+        await asyncio.sleep(CONFIG["PAGE_LOAD_DELAY"])
+
+        results = {
+            'col_d': ["N/A"],
+            'col_e': ["N/A"],
+            'col_f': ["N/A"],
+            'pnl_values': ['N/A'] * 7
+        }
+
+        # Парсим базовые колонки
+        for col in ['col_d', 'col_e', 'col_f']:
+            for selector in CONFIG["TARGET_CLASSES"][col]:
+                try:
+                    element = await page.wait_for_selector(f'.{selector}', timeout=CONFIG["WAIT_TIMEOUT"])
+                    if element:
+                        text = await element.inner_text()
+                        if text.startswith('+'):
+                            text = text[1:]
+                        results[col] = [text]
+                        break
+                except Exception:
+                    continue
+
+        # Парсим PnL блок
         try:
-            await page.goto(url, wait_until="networkidle")
-            await asyncio.sleep(CONFIG["PAGE_LOAD_DELAY"])
-
-            results = {
-                'col_d': ["N/A"],
-                'col_e': ["N/A"],
-                'col_f': ["N/A"],
-                'pnl_values': ['N/A'] * 7
-            }
-
-            # Парсим базовые колонки
-            for col in ['col_d', 'col_e', 'col_f']:
-                for selector in CONFIG["TARGET_CLASSES"][col]:
-                    try:
-                        element = await page.wait_for_selector(f'.{selector}', timeout=10000)
-                        if element:
-                            text = await element.inner_text()
-                            if text.startswith('+'):
-                                text = text[1:]
-                            results[col] = [text]
-                            break
-                    except Exception:
-                        continue
-
-            # Парсим PnL блок
-            try:
-                pnl_element = await page.wait_for_selector('.css-1ug9me3', timeout=10000)
-                if pnl_element:
-                    pnl_text = await pnl_element.inner_text()
-                    if pnl_text:
-                        results['pnl_values'] = extract_pnl_values(pnl_text)
-            except Exception as e:
-                logger.error(f"Error parsing PnL block for {url}: {e}")
-
-            if any(v != 'N/A' for v in results['pnl_values'][:4]):
-                return results
-
+            pnl_element = await page.wait_for_selector('.css-1ug9me3', timeout=CONFIG["WAIT_TIMEOUT"])
+            if pnl_element:
+                pnl_text = await pnl_element.inner_text()
+                if pnl_text:
+                    results['pnl_values'] = extract_pnl_values(pnl_text)
         except Exception as e:
-            logger.error(f"Error processing {url}: {e}")
-        finally:
-            await context.close()
-            
-        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
-    
-    return None
+            logger.error(f"Error parsing PnL block for {url}: {e}")
 
-async def process_batch(urls, browser_pool):
-    """Обрабатывает пакет URL параллельно"""
-    tasks = [parse_url_with_retry(url, browser_pool) for url in urls if url]
-    results = await asyncio.gather(*tasks)
+        return results
+
+    except TimeoutError:
+        logger.error(f"Timeout error for {url}")
+        return None
+    except Exception as e:
+        logger.error(f"Error processing {url}: {e}")
+        return None
+    finally:
+        await context.close()
+
+async def process_batch(urls, browser):
+    """Обрабатывает пакет URL"""
+    tasks = []
+    for url in urls:
+        if url and url.startswith('http'):
+            tasks.append(parse_url(url, browser))
+            await asyncio.sleep(0.5)  # Небольшая задержка между запусками
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     
     values = []
     for result in results:
-        if result:
+        if result and not isinstance(result, Exception):
             row_values = [
                 ', '.join(clean_numeric_values(result.get('col_d', [])[:3])),
                 ', '.join(clean_numeric_values(result.get('col_e', [])[:3])),
@@ -151,13 +248,14 @@ async def process_batch(urls, browser_pool):
                 *(result.get('pnl_values', ['N/A'] * 7))
             ]
             values.append(row_values)
+        else:
+            values.append(['N/A'] * 10)  # Добавляем N/A для неудачных запросов
     
     return values
 
 async def main():
     logger.info("Starting parser")
     try:
-        # Инициализация Google Sheets
         encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
         if not encoded_creds:
             raise ValueError("GOOGLE_CREDENTIALS_BASE64 not set")
@@ -174,16 +272,13 @@ async def main():
         sheet = gc.open_by_key(CONFIG["SPREADSHEET_ID"]).worksheet(CONFIG["SHEET_NAME"])
         logger.info("Connected to Google Sheet")
 
-        # Инициализация Playwright и пула браузеров
         async with async_playwright() as playwright:
-            browser_pool = BrowserPool(playwright, CONFIG["MAX_CONCURRENT_BROWSERS"])
+            browser = await setup_browser(playwright)
             
-            # Обработка URL батчами
             for i in range(0, CONFIG["TOTAL_URLS"], CONFIG["BATCH_SIZE"]):
                 start_row = CONFIG["START_ROW"] + i
                 end_row = min(start_row + CONFIG["BATCH_SIZE"], CONFIG["START_ROW"] + CONFIG["TOTAL_URLS"])
                 
-                # Получение URL для текущего батча
                 urls = [sheet.cell(row, 3).value for row in range(start_row, end_row)]
                 urls = [url for url in urls if url and url.startswith('http')]
                 
@@ -191,7 +286,7 @@ async def main():
                     continue
 
                 logger.info(f"Processing batch of {len(urls)} URLs starting at row {start_row}")
-                values = await process_batch(urls, browser_pool)
+                values = await process_batch(urls, browser)
 
                 if values:
                     range_name = f'D{start_row}:M{start_row + len(values) - 1}'
@@ -203,8 +298,9 @@ async def main():
                     )
                     logger.info(f"Updated {len(values)} rows")
 
-            # Очистка ресурсов
-            await browser_pool.cleanup()
+                await asyncio.sleep(CONFIG["REQUEST_DELAY"])
+
+            await browser.close()
 
     except Exception as e:
         logger.critical(f"Critical error: {str(e)}", exc_info=True)
