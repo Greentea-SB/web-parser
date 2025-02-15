@@ -47,7 +47,18 @@ USER_AGENTS = [
 PROXIES = []
 
 def clean_numeric_values(data_list):
-    return [item.strip() for item in data_list]
+    """Очищает числовые значения от плюсов, сохраняя минусы"""
+    cleaned = []
+    for item in data_list:
+        if isinstance(item, str):
+            # Если значение начинается с '+', удаляем его
+            if item.strip().startswith('+'):
+                item = item.strip()[1:]
+            # Если это число с запятой, сохраняем его как есть
+            if ',' in item and any(c.isdigit() for c in item):
+                pass
+        cleaned.append(item.strip() if isinstance(item, str) else item)
+    return cleaned
 
 def extract_value(text):
     """Очищает значение от символов валюты и плюсов, сохраняя минусы"""
@@ -62,6 +73,9 @@ def extract_value(text):
     # Удаляем просто '+' в начале, но сохраняем '-'
     elif value.startswith('+'):
         value = value[1:]
+    # Специальная обработка для чисел с запятыми
+    if ',' in value and any(c.isdigit() for c in value):
+        return value
     return value
 
 def extract_pnl_values(text):
@@ -123,11 +137,18 @@ def extract_pnl_values(text):
         for i, line in enumerate(lines):
             for label, index in label_mapping.items():
                 if label in line and i + 1 < len(lines):
-                    value = extract_value(lines[i + 1])
-                    # Для Unrealized Profits и Total Cost проверяем, было ли значение отрицательным
-                    if index in [4, 6] and lines[i + 1].startswith('-'):
-                        value = f"-{value}"
-                    values[index] = value
+                    next_line = lines[i + 1]
+                    # Специальная обработка для значений с запятыми
+                    if ',' in next_line and any(c.isdigit() for c in next_line):
+                        value = extract_value(next_line)
+                        if next_line.startswith('-'):
+                            value = f"-{value}"
+                        values[index] = value
+                    else:
+                        value = extract_value(next_line)
+                        if next_line.startswith('-'):
+                            value = f"-{value}"
+                        values[index] = value
 
         logger.info(f"Extracted values: {values}")
         return values
@@ -177,6 +198,9 @@ async def parse_data(url, browser, error_attempt=1):
                     element = await page.wait_for_selector(f'.{selector}', timeout=10000)
                     if element:
                         text = await element.inner_text()
+                        # Очищаем значение от плюсов
+                        if text.startswith('+'):
+                            text = text[1:]
                         results[col] = [text]
                         logger.info(f"Found {col}: {text}")
                         break
