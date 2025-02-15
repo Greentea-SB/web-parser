@@ -88,19 +88,22 @@ def extract_pnl_values(text):
                     # Обрабатываем процент
                     percent = pnl_parts[1].strip().rstrip(')')
                     if percent.endswith('%'):
-                        values[3] = percent
+                        # Удаляем знак + из процента, если он есть
+                        values[3] = percent.replace('+', '')
                     else:
-                        values[3] = percent + '%'
+                        # Удаляем знак + из процента и добавляем %, если его нет
+                        values[3] = percent.replace('+', '') + '%'
 
         # Ищем Unrealized Profits
         for i, line in enumerate(lines):
             if 'UnrealizedProfits' in line and i + 1 < len(lines):
                 next_line = lines[i + 1]
                 if next_line.startswith('$'):
-                    next_line = next_line[1:]  # Убираем первый символ $
+                    values[4] = next_line[1:]  # Убираем первый символ $
                 elif next_line.startswith('-$'):
-                    next_line = '-' + next_line[2:]  # Обрабатываем отрицательные значения
-                values[4] = next_line
+                    values[4] = '-' + next_line[2:]  # Обрабатываем отрицательные значения
+                else:
+                    values[4] = next_line
 
         # Ищем Duration
         for i, line in enumerate(lines):
@@ -114,10 +117,11 @@ def extract_pnl_values(text):
             if 'TotalCost' in line and i + 1 < len(lines):
                 next_line = lines[i + 1]
                 if next_line.startswith('$'):
-                    next_line = next_line[1:]  # Убираем символ доллара
+                    values[6] = next_line[1:]  # Убираем символ доллара
                 elif next_line.startswith('-$'):
-                    next_line = '-' + next_line[2:]  # Обрабатываем отрицательные значения
-                values[6] = next_line
+                    values[6] = '-' + next_line[2:]  # Обрабатываем отрицательные значения
+                else:
+                    values[6] = next_line
 
         logger.info(f"Extracted values: {values}")
         return values
