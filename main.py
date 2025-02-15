@@ -28,7 +28,7 @@ CONFIG = {
     "REQUEST_DELAY": 10,
     "PAGE_LOAD_DELAY": 5,
     "MAX_CONCURRENT_PAGES": 5,
-    "START_ROW": 14,
+    "START_ROW": 19,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
         'col_d': ['css-16udrhy', 'css-16udrhy', 'css-nd24it'],
@@ -46,18 +46,20 @@ USER_AGENTS = [
 
 PROXIES = []
 
+def is_valid_number(text):
+    """Проверяет, является ли текст числом (включая числа с запятыми)"""
+    # Удаляем запятые и проверяем, является ли оставшаяся часть числом
+    return bool(re.match(r'^-?\d+(?:,\d+)*(?:\.\d+)?$', text.replace(',', '')))
+
 def clean_numeric_values(data_list):
     """Очищает числовые значения от плюсов, сохраняя минусы"""
     cleaned = []
     for item in data_list:
         if isinstance(item, str):
-            # Если значение начинается с '+', удаляем его
-            if item.strip().startswith('+'):
-                item = item.strip()[1:]
-            # Если это число с запятой, сохраняем его как есть
-            if ',' in item and any(c.isdigit() for c in item):
-                pass
-        cleaned.append(item.strip() if isinstance(item, str) else item)
+            item = item.strip()
+            if item.startswith('+'):
+                item = item[1:]
+        cleaned.append(item)
     return cleaned
 
 def extract_value(text):
@@ -65,17 +67,12 @@ def extract_value(text):
     if not text or text == 'N/A':
         return text
     value = text.strip()
-    # Удаляем '+$' или '$' в начале
     if value.startswith('+$'):
         value = value[2:]
     elif value.startswith('$'):
         value = value[1:]
-    # Удаляем просто '+' в начале, но сохраняем '-'
     elif value.startswith('+'):
         value = value[1:]
-    # Специальная обработка для чисел с запятыми
-    if ',' in value and any(c.isdigit() for c in value):
-        return value
     return value
 
 def extract_pnl_values(text):
@@ -91,10 +88,10 @@ def extract_pnl_values(text):
         # Получаем числа TXs
         for i, line in enumerate(lines):
             if '7D TXs' in line:
-                # Ищем следующие две цифры после '7D TXs'
+                # Ищем числа (включая числа с запятыми) после '7D TXs'
                 tx_values = []
                 for j in range(i + 1, min(i + 5, len(lines))):
-                    if lines[j].isdigit():
+                    if is_valid_number(lines[j]) or lines[j].replace(',', '').isdigit():
                         tx_values.append(lines[j])
                     if len(tx_values) == 2:
                         break
@@ -111,7 +108,6 @@ def extract_pnl_values(text):
                 amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
                 if amount_match:
                     pnl_value = amount_match.group(1)
-                    # Проверяем, было ли значение отрицательным в исходной строке
                     if '-' in pnl_line and pnl_line.index('-') < pnl_line.index(pnl_value):
                         values[2] = f"-{pnl_value}"
                     else:
@@ -121,7 +117,6 @@ def extract_pnl_values(text):
                 percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
                 if percent_match:
                     percent_value = percent_match.group(1)
-                    # Сохраняем минус, если он есть, но убираем плюс
                     if percent_value.startswith('+'):
                         percent_value = percent_value[1:]
                     values[3] = f"{percent_value}%"
@@ -138,16 +133,13 @@ def extract_pnl_values(text):
             for label, index in label_mapping.items():
                 if label in line and i + 1 < len(lines):
                     next_line = lines[i + 1]
-                    # Специальная обработка для значений с запятыми
-                    if ',' in next_line and any(c.isdigit() for c in next_line):
-                        value = extract_value(next_line)
-                        if next_line.startswith('-'):
-                            value = f"-{value}"
-                        values[index] = value
+                    value = extract_value(next_line)
+                    if next_line.startswith('-'):
+                        if value.startswith('-'):  # Избегаем двойных минусов
+                            values[index] = value
+                        else:
+                            values[index] = f"-{value}"
                     else:
-                        value = extract_value(next_line)
-                        if next_line.startswith('-'):
-                            value = f"-{value}"
                         values[index] = value
 
         logger.info(f"Extracted values: {values}")
@@ -198,7 +190,6 @@ async def parse_data(url, browser, error_attempt=1):
                     element = await page.wait_for_selector(f'.{selector}', timeout=10000)
                     if element:
                         text = await element.inner_text()
-                        # Очищаем значение от плюсов
                         if text.startswith('+'):
                             text = text[1:]
                         results[col] = [text]
