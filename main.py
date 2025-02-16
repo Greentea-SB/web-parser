@@ -25,9 +25,9 @@ CONFIG = {
     "CREDS_FILE": "temp_key.json",
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 1,  # Уменьшено с 3 до 1
-    "PAGE_LOAD_DELAY": 1,  # Уменьшено с 2 до 1
-    "MAX_CONCURRENT_PAGES": 20,  # Увеличено с 10 до 20
+    "REQUEST_DELAY": 1,
+    "PAGE_LOAD_DELAY": 2,
+    "MAX_CONCURRENT_PAGES": 20,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
@@ -35,9 +35,9 @@ CONFIG = {
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     },
-    "BATCH_SIZE": 50,  # Увеличено с 20 до 50
-    "MAX_PARALLEL_BATCHES": 5,  # Увеличено с 3 до 5
-    "MIN_REQUEST_INTERVAL": 0.5,  # Уменьшено с 1 до 0.5
+    "BATCH_SIZE": 20,
+    "MAX_PARALLEL_BATCHES": 5,
+    "MIN_REQUEST_INTERVAL": 0.5,
 }
 
 USER_AGENTS = [
@@ -62,11 +62,22 @@ class RequestManager:
                     await asyncio.sleep(CONFIG["MIN_REQUEST_INTERVAL"] - time_since_last)
             self.last_request_time[domain] = time.time()
 
+def clean_numeric_values(data_list):
+    cleaned = []
+    for item in data_list:
+        if isinstance(item, str):
+            item = item.strip()
+            if item.startswith('+'):
+                item = item[1:]
+        cleaned.append(item)
+    return cleaned
+
 def extract_pnl_values(text):
     values = ['N/A'] * 7
     try:
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         
+        # Извлечение TXs
         for i, line in enumerate(lines):
             if '7D TXs' in line:
                 tx_values = []
@@ -78,21 +89,27 @@ def extract_pnl_values(text):
                             tx_values.append(current_line)
                     j += 1
                 if len(tx_values) >= 2:
-                    values[0] = tx_values[0]
-                    values[1] = tx_values[1]
+                    values[0] = tx_values[0]  # Buy TXs
+                    values[1] = tx_values[1]  # Sell TXs
 
+        # Извлечение Total PnL
+        for i, line in enumerate(lines):
             if 'Total PnL' in line and i + 1 < len(lines):
                 pnl_line = lines[i + 1]
                 if pnl_line != '--':
+                    # Извлечение суммы
                     amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
                     if amount_match:
                         pnl_value = amount_match.group(1)
                         values[2] = f"-{pnl_value}" if '-' in pnl_line else pnl_value
 
+                    # Извлечение процента
                     percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
                     if percent_match:
-                        values[3] = f"{percent_match.group(1)}%"
+                        percent_value = percent_match.group(1)
+                        values[3] = f"{percent_value}%"
 
+        # Извлечение остальных значений
         label_mapping = {
             'Unrealized Profits': 4,
             '7D Avg Duration': 5,
@@ -104,6 +121,8 @@ def extract_pnl_values(text):
                 if label in line and i + 1 < len(lines):
                     next_line = lines[i + 1].strip()
                     if next_line != '--':
+                        if next_line.startswith('$'):
+                            next_line = next_line[1:]
                         values[index] = f"-{next_line}" if next_line.startswith('-') else next_line
 
         return values
@@ -115,14 +134,19 @@ async def setup_browser():
     playwright = await async_playwright().start()
     browser = await playwright.chromium.launch(
         headless=True,
-        args=['--no-sandbox', '--disable-setuid-sandbox']
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-web-security',
+            '--disable-features=IsolateOrigins,site-per-process'
+        ]
     )
     return browser, playwright
 
 async def parse_data(url, context):
     page = await context.new_page()
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await page.goto(url, wait_until="networkidle", timeout=30000)
         await asyncio.sleep(CONFIG["PAGE_LOAD_DELAY"])
 
         results = {
@@ -132,32 +156,31 @@ async def parse_data(url, context):
             'pnl_values': ['N/A'] * 7
         }
 
-        # Параллельный сбор данных
-        tasks = []
+        # Ожидание загрузки всех элементов
+        await page.wait_for_load_state("networkidle")
+
+        # Получение данных колонок
         for col in ['col_d', 'col_e', 'col_f']:
             for selector in CONFIG["TARGET_CLASSES"][col]:
-                tasks.append(page.wait_for_selector(f'.{selector}', timeout=5000))
-        
-        elements = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Обработка результатов
-        element_index = 0
-        for col in ['col_d', 'col_e', 'col_f']:
-            for _ in CONFIG["TARGET_CLASSES"][col]:
-                element = elements[element_index]
-                if isinstance(element, Exception):
+                try:
+                    element = await page.wait_for_selector(f'.{selector}', timeout=10000)
+                    if element:
+                        text = await element.inner_text()
+                        results[col] = [text.lstrip('+')]
+                        break
+                except Exception:
                     continue
-                if element:
-                    text = await element.inner_text()
-                    results[col] = [text.lstrip('+')]
-                    break
-                element_index += 1
 
-        pnl_element = await page.wait_for_selector('.css-1ug9me3', timeout=5000)
-        if pnl_element:
-            pnl_text = await pnl_element.inner_text()
-            if pnl_text:
-                results['pnl_values'] = extract_pnl_values(pnl_text)
+        # Получение PnL данных
+        try:
+            await page.wait_for_selector('.css-1ug9me3', state="attached", timeout=10000)
+            pnl_element = await page.query_selector('.css-1ug9me3')
+            if pnl_element:
+                pnl_text = await pnl_element.inner_text()
+                if pnl_text:
+                    results['pnl_values'] = extract_pnl_values(pnl_text)
+        except Exception as e:
+            logger.error(f"Error getting PnL data for {url}: {e}")
 
         return results
 
@@ -217,27 +240,28 @@ async def main():
         browser, playwright = await setup_browser()
         request_manager = RequestManager()
 
-        # Получаем все URL одним запросом
+        # Получение всех URL
         cells = sheet.range(f'C{CONFIG["START_ROW"]}:C{CONFIG["START_ROW"] + CONFIG["TOTAL_URLS"]}')
         urls = [cell.value for cell in cells if cell.value and cell.value.startswith('http')]
 
-        # Обработка в параллельных батчах
-        all_values = []
-        batch_size = CONFIG["BATCH_SIZE"]
-        for i in range(0, len(urls), batch_size):
-            batch_urls = urls[i:i + batch_size]
+        # Обработка батчами
+        for i in range(0, len(urls), CONFIG["BATCH_SIZE"]):
+            batch_urls = urls[i:i + CONFIG["BATCH_SIZE"]]
             if not batch_urls:
                 continue
 
             values = await process_batch(batch_urls, browser, request_manager)
+            
             if values:
                 start_row = CONFIG["START_ROW"] + i
                 range_name = f'D{start_row}:M{start_row + len(values) - 1}'
                 sheet.update(range_name, values, value_input_option='RAW')
-                all_values.extend(values)
+                logger.info(f"Updated rows {start_row} to {start_row + len(values) - 1}")
+                await asyncio.sleep(1)  # Небольшая пауза между обновлениями
 
         await browser.close()
         await playwright.stop()
+        logger.info("Parser finished successfully")
 
     except Exception as e:
         logger.critical(f"Critical error: {str(e)}", exc_info=True)
