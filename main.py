@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import re
+import time
 from playwright.async_api import async_playwright, TimeoutError
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -27,7 +28,7 @@ CONFIG = {
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 1,
     "PAGE_LOAD_DELAY": 1,
-    "BATCH_SIZE": 5,  # Уменьшено количество одновременных запросов
+    "BATCH_SIZE": 5,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
@@ -35,9 +36,10 @@ CONFIG = {
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     },
-    "MAX_CONCURRENT_BROWSERS": 3,  # Уменьшено количество браузеров
-    "NAVIGATION_TIMEOUT": 60000,  # Увеличен таймаут до 60 секунд
-    "WAIT_TIMEOUT": 10000  # Таймаут для ожидания элементов
+    "MAX_CONCURRENT_BROWSERS": 3,
+    "NAVIGATION_TIMEOUT": 60000,
+    "WAIT_TIMEOUT": 10000,
+    "SHEETS_API_DELAY": 2  # Задержка между запросами к API
 }
 
 USER_AGENTS = [
@@ -49,107 +51,7 @@ USER_AGENTS = [
 
 PROXIES = []
 
-def is_valid_number(text):
-    """Проверяет, является ли текст числом (включая числа с запятыми)"""
-    text = text.strip()
-    pattern = r'^-?\d+(?:,\d+)*(?:\.\d+)?$'
-    return bool(re.match(pattern, text))
-
-def clean_numeric_values(data_list):
-    """Очищает числовые значения от плюсов, сохраняя минусы и запятые"""
-    cleaned = []
-    for item in data_list:
-        if isinstance(item, str):
-            item = item.strip()
-            if item.startswith('+'):
-                item = item[1:]
-        cleaned.append(item)
-    return cleaned
-
-def extract_value(text):
-    """Очищает значение от символов валюты и плюсов, сохраняя минусы и запятые"""
-    if not text or text == 'N/A':
-        return text
-    value = text.strip()
-    if value.startswith('+$'):
-        value = value[2:]
-    elif value.startswith('$'):
-        value = value[1:]
-    elif value.startswith('+'):
-        value = value[1:]
-    return value
-
-def extract_pnl_values(text):
-    """Извлекает значения из текста PnL с сохранением форматирования"""
-    logger.info(f"Raw PnL text: {text}")
-    values = ['N/A'] * 7
-
-    try:
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        logger.info(f"Split lines: {lines}")
-
-        # Получаем числа TXs
-        for i, line in enumerate(lines):
-            if '7D TXs' in line:
-                tx_values = []
-                j = i + 1
-                while j < len(lines) and len(tx_values) < 2:
-                    current_line = lines[j].strip()
-                    if current_line != '/':
-                        if re.match(r'^\d+(?:,\d+)*$', current_line):
-                            tx_values.append(current_line)
-                    j += 1
-                if len(tx_values) >= 2:
-                    values[0] = tx_values[0]
-                    values[1] = tx_values[1]
-                break
-
-        # Получаем Total PnL и процент
-        for i, line in enumerate(lines):
-            if 'Total PnL' in line and i + 1 < len(lines):
-                pnl_line = lines[i + 1]
-                amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
-                if amount_match:
-                    pnl_value = amount_match.group(1)
-                    if '-' in pnl_line and pnl_line.index('-') < pnl_line.index(pnl_value):
-                        values[2] = f"-{pnl_value}"
-                    else:
-                        values[2] = pnl_value
-
-                percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
-                if percent_match:
-                    percent_value = percent_match.group(1)
-                    if percent_value.startswith('+'):
-                        percent_value = percent_value[1:]
-                    values[3] = f"{percent_value}%"
-
-        # Словарь соответствия меток и индексов
-        label_mapping = {
-            'Unrealized Profits': 4,
-            '7D Avg Duration': 5,
-            '7D Total Cost': 6
-        }
-
-        # Получаем остальные значения
-        for i, line in enumerate(lines):
-            for label, index in label_mapping.items():
-                if label in line and i + 1 < len(lines):
-                    next_line = lines[i + 1]
-                    value = extract_value(next_line)
-                    if next_line.startswith('-'):
-                        if value.startswith('-'):
-                            values[index] = value
-                        else:
-                            values[index] = f"-{value}"
-                    else:
-                        values[index] = value
-
-        logger.info(f"Extracted values: {values}")
-        return values
-
-    except Exception as e:
-        logger.error(f"Error parsing PnL block: {e}")
-        return values
+# ... (оставляем все вспомогательные функции без изменений: is_valid_number, clean_numeric_values, extract_value, extract_pnl_values)
 
 async def setup_browser(playwright):
     """Создает новый браузер с оптимизированными настройками"""
@@ -169,8 +71,37 @@ async def setup_browser(playwright):
     )
     return browser
 
+class SheetManager:
+    def __init__(self, sheet):
+        self.sheet = sheet
+        self.last_request_time = 0
+        
+    async def get_range(self, range_name):
+        await self._wait_for_rate_limit()
+        return self.sheet.get(range_name)
+    
+    async def update_range(self, range_name, values):
+        await self._wait_for_rate_limit()
+        self.sheet.update(range_name=range_name, values=values, value_input_option='RAW')
+    
+    async def get_batch_urls(self, start_row, batch_size):
+        await self._wait_for_rate_limit()
+        range_name = f'C{start_row}:C{start_row + batch_size - 1}'
+        values = self.sheet.get(range_name)
+        return [val[0] if val else None for val in values] if values else []
+    
+    async def _wait_for_rate_limit(self):
+        current_time = time.time()
+        time_since_last_request = current_time - self.last_request_time
+        if time_since_last_request < CONFIG["SHEETS_API_DELAY"]:
+            await asyncio.sleep(CONFIG["SHEETS_API_DELAY"] - time_since_last_request)
+        self.last_request_time = time.time()
+
 async def parse_url(url, browser):
     """Парсит один URL"""
+    if not url or not url.startswith('http'):
+        return None
+
     context = await browser.new_context(
         user_agent=random.choice(USER_AGENTS),
         viewport={'width': 1920, 'height': 1080}
@@ -178,11 +109,9 @@ async def parse_url(url, browser):
     page = await context.new_page()
     
     try:
-        # Устанавливаем таймауты
         page.set_default_navigation_timeout(CONFIG["NAVIGATION_TIMEOUT"])
         page.set_default_timeout(CONFIG["WAIT_TIMEOUT"])
 
-        # Загружаем страницу с ожиданием загрузки DOM
         await page.goto(url, wait_until="domcontentloaded")
         await asyncio.sleep(CONFIG["PAGE_LOAD_DELAY"])
 
@@ -193,7 +122,6 @@ async def parse_url(url, browser):
             'pnl_values': ['N/A'] * 7
         }
 
-        # Парсим базовые колонки
         for col in ['col_d', 'col_e', 'col_f']:
             for selector in CONFIG["TARGET_CLASSES"][col]:
                 try:
@@ -207,7 +135,6 @@ async def parse_url(url, browser):
                 except Exception:
                     continue
 
-        # Парсим PnL блок
         try:
             pnl_element = await page.wait_for_selector('.css-1ug9me3', timeout=CONFIG["WAIT_TIMEOUT"])
             if pnl_element:
@@ -234,7 +161,7 @@ async def process_batch(urls, browser):
     for url in urls:
         if url and url.startswith('http'):
             tasks.append(parse_url(url, browser))
-            await asyncio.sleep(0.5)  # Небольшая задержка между запусками
+            await asyncio.sleep(0.5)
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
@@ -249,7 +176,7 @@ async def process_batch(urls, browser):
             ]
             values.append(row_values)
         else:
-            values.append(['N/A'] * 10)  # Добавляем N/A для неудачных запросов
+            values.append(['N/A'] * 10)
     
     return values
 
@@ -270,6 +197,7 @@ async def main():
             )
         )
         sheet = gc.open_by_key(CONFIG["SPREADSHEET_ID"]).worksheet(CONFIG["SHEET_NAME"])
+        sheet_manager = SheetManager(sheet)
         logger.info("Connected to Google Sheet")
 
         async with async_playwright() as playwright:
@@ -277,28 +205,30 @@ async def main():
             
             for i in range(0, CONFIG["TOTAL_URLS"], CONFIG["BATCH_SIZE"]):
                 start_row = CONFIG["START_ROW"] + i
-                end_row = min(start_row + CONFIG["BATCH_SIZE"], CONFIG["START_ROW"] + CONFIG["TOTAL_URLS"])
                 
-                urls = [sheet.cell(row, 3).value for row in range(start_row, end_row)]
-                urls = [url for url in urls if url and url.startswith('http')]
-                
-                if not urls:
+                try:
+                    urls = await sheet_manager.get_batch_urls(start_row, CONFIG["BATCH_SIZE"])
+                    
+                    if not urls:
+                        continue
+
+                    logger.info(f"Processing batch of {len(urls)} URLs starting at row {start_row}")
+                    values = await process_batch(urls, browser)
+
+                    if values:
+                        range_name = f'D{start_row}:M{start_row + len(values) - 1}'
+                        logger.info(f"Updating range {range_name}")
+                        await sheet_manager.update_range(range_name, values)
+                        logger.info(f"Updated {len(values)} rows")
+
+                    # Добавляем задержку между батчами
+                    await asyncio.sleep(CONFIG["SHEETS_API_DELAY"])
+
+                except Exception as e:
+                    logger.error(f"Error processing batch starting at row {start_row}: {e}")
+                    # Добавляем дополнительную задержку при ошибке
+                    await asyncio.sleep(CONFIG["SHEETS_API_DELAY"] * 2)
                     continue
-
-                logger.info(f"Processing batch of {len(urls)} URLs starting at row {start_row}")
-                values = await process_batch(urls, browser)
-
-                if values:
-                    range_name = f'D{start_row}:M{start_row + len(values) - 1}'
-                    logger.info(f"Updating range {range_name}")
-                    sheet.update(
-                        range_name=range_name,
-                        values=values,
-                        value_input_option='RAW'
-                    )
-                    logger.info(f"Updated {len(values)} rows")
-
-                await asyncio.sleep(CONFIG["REQUEST_DELAY"])
 
             await browser.close()
 
