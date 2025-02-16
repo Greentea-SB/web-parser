@@ -244,19 +244,22 @@ async def process_single_url(url, browser):
         'pnl_values': ['N/A'] * 7
     }
 
+
 async def process_urls(urls, browser):
     logger.info(f"Processing {len(urls)} URLs")
-    results = []
+    
+    # Создаем список задач для асинхронного выполнения
+    tasks = []
     for url in urls:
         if url:  # Проверяем, что URL не пустой
-            result = await process_single_url(url, browser)
-            results.append(result)
-            await asyncio.sleep(CONFIG["REQUEST_DELAY"])
-
+            tasks.append(process_single_url(url, browser))
+    
+    # Запускаем все задачи одновременно
+    results = await asyncio.gather(*tasks)
+    
     values = []
     for res in results:
         if res:
-            # Не преобразуем значения, оставляем их как есть
             row_values = [
                 ', '.join(clean_numeric_values(res.get('col_d', [])[:3])),
                 ', '.join(clean_numeric_values(res.get('col_e', [])[:3])),
@@ -267,6 +270,54 @@ async def process_urls(urls, browser):
             values.append(row_values)
 
     return values
+
+async def update_sheet(sheet, start_row, values):
+    """Отдельная функция для обновления таблицы с повторными попытками"""
+    max_retries = 3
+    retry_delay = 10
+    
+    for attempt in range(max_retries):
+        try:
+            range_name = f'D{start_row}:M{start_row + len(values) - 1}'
+            logger.info(f"Updating range {range_name}")
+            sheet.update(
+                range_name=range_name,
+                values=values,
+                value_input_option='RAW'
+            )
+            logger.info(f"Updated {len(values)} rows")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating sheet (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+    return False
+
+async def process_batch(sheet, browser, start_row, batch_size):
+    """Обработка одного батча URL"""
+    try:
+        urls = [sheet.cell(start_row + j, 3).value for j in range(batch_size)]
+        urls = [url for url in urls if url and url.startswith('http')]
+        
+        if not urls:
+            logger.info(f"No URLs found starting at row {start_row}")
+            return True
+
+        logger.info(f"Processing batch starting at row {start_row}")
+        values = await process_urls(urls, browser)
+
+        if values:
+            success = await update_sheet(sheet, start_row, values)
+            if not success:
+                logger.error(f"Failed to update sheet for batch starting at row {start_row}")
+                return False
+
+        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
+        return True
+
+    except Exception as e:
+        logger.error(f"Error processing batch at row {start_row}: {e}")
+        return False
 
 async def main():
     logger.info("Starting parser")
@@ -290,30 +341,21 @@ async def main():
         browser, playwright = await setup_browser()
         logger.info("Browser setup complete")
 
+        # Создаем список задач для обработки батчей
+        batch_tasks = []
         for i in range(0, CONFIG["TOTAL_URLS"], CONFIG["MAX_CONCURRENT_PAGES"]):
-            start = CONFIG["START_ROW"] + i
-            urls = [sheet.cell(start + j, 3).value for j in range(CONFIG["MAX_CONCURRENT_PAGES"])]
-            urls = [url for url in urls if url and url.startswith('http')]
+            start_row = CONFIG["START_ROW"] + i
+            batch_tasks.append(process_batch(sheet, browser, start_row, CONFIG["MAX_CONCURRENT_PAGES"]))
             
-            if not urls:
-                logger.info(f"No URLs found starting at row {start}")
-                continue
-
-            logger.info(f"Processing batch starting at row {start}")
-            values = await process_urls(urls, browser)
-
-            if values:
-                range_name = f'D{start}:M{start + len(values) - 1}'
-                logger.info(f"Updating range {range_name}")
-                # Используем 'RAW' вместо 'USER_ENTERED' для сохранения форматирования
-                sheet.update(
-                    range_name=range_name,
-                    values=values,
-                    value_input_option='RAW'
-                )
-                logger.info(f"Updated {len(values)} rows")
-
-            await asyncio.sleep(CONFIG["REQUEST_DELAY"])
+            # Запускаем батчи по 3 одновременно
+            if len(batch_tasks) >= 3 or (i + CONFIG["MAX_CONCURRENT_PAGES"]) >= CONFIG["TOTAL_URLS"]:
+                batch_results = await asyncio.gather(*batch_tasks)
+                batch_tasks = []  # Очищаем список задач
+                
+                # Если были ошибки, делаем паузу
+                if not all(batch_results):
+                    logger.warning("Some batches failed, adding delay")
+                    await asyncio.sleep(CONFIG["REQUEST_DELAY"] * 2)
 
         await browser.close()
         await playwright.stop()
