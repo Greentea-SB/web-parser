@@ -78,12 +78,17 @@ def extract_value(text):
     return value
 
 def extract_pnl_values(text):
+    """Извлекает значения из текста PnL с сохранением форматирования"""
     logger.info(f"Raw PnL text: {text}")
     values = ['N/A'] * 7
 
     try:
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         logger.info(f"Split lines: {lines}")
+
+        # Если все значения '--', возвращаем 'N/A'
+        if all(line == '--' for line in lines if line not in ['PnL', '7D TXs', '/', 'Total PnL', 'Unrealized Profits', '7D Avg Duration', '7D Total Cost']):
+            return values
 
         # Получаем числа TXs
         for i, line in enumerate(lines):
@@ -92,7 +97,7 @@ def extract_pnl_values(text):
                 j = i + 1
                 while j < len(lines) and len(tx_values) < 2:
                     current_line = lines[j].strip()
-                    if current_line != '/':
+                    if current_line != '/' and current_line != '--':
                         if re.match(r'^\d+(?:,\d+)*$', current_line):
                             tx_values.append(current_line)
                     j += 1
@@ -105,39 +110,45 @@ def extract_pnl_values(text):
         for i, line in enumerate(lines):
             if 'Total PnL' in line and i + 1 < len(lines):
                 pnl_line = lines[i + 1]
-                amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
-                if amount_match:
-                    pnl_value = amount_match.group(1)
-                    if '-' in pnl_line and pnl_line.index('-') < pnl_line.index(pnl_value):
-                        values[2] = f"-{pnl_value}"
-                    else:
-                        values[2] = pnl_value
+                if pnl_line != '--':
+                    # Ищем сумму
+                    amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
+                    if amount_match:
+                        pnl_value = amount_match.group(1)
+                        if '-' in pnl_line and pnl_line.index('-') < pnl_line.index(pnl_value):
+                            values[2] = f"-{pnl_value}"
+                        else:
+                            values[2] = pnl_value
 
-                percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
-                if percent_match:
-                    percent_value = percent_match.group(1)
-                    if percent_value.startswith('+'):
-                        percent_value = percent_value[1:]
-                    values[3] = f"{percent_value}%"
+                    # Ищем процент
+                    percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
+                    if percent_match:
+                        percent_value = percent_match.group(1)
+                        if percent_value.startswith('+'):
+                            percent_value = percent_value[1:]
+                        values[3] = f"{percent_value}%"
 
+        # Словарь соответствия меток и индексов
         label_mapping = {
             'Unrealized Profits': 4,
             '7D Avg Duration': 5,
             '7D Total Cost': 6
         }
 
+        # Получаем остальные значения
         for i, line in enumerate(lines):
             for label, index in label_mapping.items():
                 if label in line and i + 1 < len(lines):
                     next_line = lines[i + 1]
-                    value = extract_value(next_line)
-                    if next_line.startswith('-'):
-                        if value.startswith('-'):
-                            values[index] = value
+                    if next_line != '--':
+                        value = extract_value(next_line)
+                        if next_line.startswith('-'):
+                            if value.startswith('-'):
+                                values[index] = value
+                            else:
+                                values[index] = f"-{value}"
                         else:
-                            values[index] = f"-{value}"
-                    else:
-                        values[index] = value
+                            values[index] = value
 
         logger.info(f"Extracted values: {values}")
         return values
@@ -145,7 +156,6 @@ def extract_pnl_values(text):
     except Exception as e:
         logger.error(f"Error parsing PnL block: {e}")
         return values
-
 class BrowserPool:
     def __init__(self, playwright, size):
         self.playwright = playwright
