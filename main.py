@@ -8,6 +8,7 @@ import re
 import time
 from playwright.async_api import async_playwright, TimeoutError
 from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime, timedelta
 
 # Настройка логирования
 logging.basicConfig(
@@ -28,7 +29,7 @@ CONFIG = {
     "MAX_NA_RETRIES": 5,
     "REQUEST_DELAY": 1,
     "PAGE_LOAD_DELAY": 1,
-    "BATCH_SIZE": 5,
+    "BATCH_SIZE": 3,  # Уменьшен размер батча
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
@@ -36,10 +37,12 @@ CONFIG = {
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     },
-    "MAX_CONCURRENT_BROWSERS": 3,
+    "MAX_CONCURRENT_BROWSERS": 2,  # Уменьшено количество браузеров
     "NAVIGATION_TIMEOUT": 60000,
     "WAIT_TIMEOUT": 10000,
-    "SHEETS_API_DELAY": 2
+    "SHEETS_API_DELAY": 3,  # Увеличена задержка между запросами к API
+    "BATCH_DELAY": 5,  # Задержка между батчами
+    "MAX_REQUESTS_PER_MINUTE": 50  # Максимальное количество запросов в минуту
 }
 
 USER_AGENTS = [
@@ -51,10 +54,78 @@ USER_AGENTS = [
 
 PROXIES = []
 
+class RateLimiter:
+    def __init__(self, max_requests, time_window):
+        self.max_requests = max_requests
+        self.time_window = time_window
+        self.requests = []
+        
+    async def acquire(self):
+        now = datetime.now()
+        # Удаляем старые запросы
+        self.requests = [req_time for req_time in self.requests 
+                        if now - req_time < timedelta(seconds=self.time_window)]
+        
+        if len(self.requests) >= self.max_requests:
+            sleep_time = (self.requests[0] + timedelta(seconds=self.time_window) - now).total_seconds()
+            if sleep_time > 0:
+                await asyncio.sleep(sleep_time)
+                
+        self.requests.append(now)
+
+class SheetManager:
+    def __init__(self, sheet):
+        self.sheet = sheet
+        self.last_request_time = 0
+        self.rate_limiter = RateLimiter(CONFIG["MAX_REQUESTS_PER_MINUTE"], 60)
+        self.cache = {}
+        
+    async def wait_for_rate_limit(self):
+        await self.rate_limiter.acquire()
+        current_time = time.time()
+        time_since_last_request = current_time - self.last_request_time
+        if time_since_last_request < CONFIG["SHEETS_API_DELAY"]:
+            await asyncio.sleep(CONFIG["SHEETS_API_DELAY"] - time_since_last_request)
+        self.last_request_time = time.time()
+
+    async def get_batch_urls(self, start_row, batch_size):
+        cache_key = f"urls_{start_row}_{batch_size}"
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        
+        await self.wait_for_rate_limit()
+        try:
+            range_name = f'C{start_row}:C{start_row + batch_size - 1}'
+            values = self.sheet.get(range_name)
+            urls = [val[0] if val else None for val in values] if values else []
+            self.cache[cache_key] = urls
+            return urls
+        except Exception as e:
+            logger.error(f"Error getting URLs for range {range_name}: {e}")
+            await asyncio.sleep(CONFIG["SHEETS_API_DELAY"] * 2)
+            return []
+
+    async def update_range(self, range_name, values):
+        await self.wait_for_rate_limit()
+        retries = 3
+        for attempt in range(retries):
+            try:
+                self.sheet.update(
+                    range_name=range_name,
+                    values=values,
+                    value_input_option='RAW'
+                )
+                return
+            except Exception as e:
+                logger.error(f"Error updating range {range_name} (attempt {attempt + 1}): {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(CONFIG["SHEETS_API_DELAY"] * (attempt + 2))
+                else:
+                    raise
+
 def is_valid_number(text):
     """Проверяет, является ли текст числом (включая числа с запятыми)"""
     text = text.strip()
-    # Паттерн для проверки числа с запятыми, точками или без них
     pattern = r'^-?\d+(?:,\d+)*(?:\.\d+)?$'
     return bool(re.match(pattern, text))
 
@@ -85,10 +156,9 @@ def extract_value(text):
 def extract_pnl_values(text):
     """Извлекает значения из текста PnL с сохранением форматирования"""
     logger.info(f"Raw PnL text: {text}")
-    values = ['N/A'] * 7  # [txs1, txs2, total_pnl, pnl_percent, unrealized, duration, total_cost]
+    values = ['N/A'] * 7
 
     try:
-        # Разбиваем текст на строки и удаляем пустые
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         logger.info(f"Split lines: {lines}")
 
@@ -99,7 +169,7 @@ def extract_pnl_values(text):
                 j = i + 1
                 while j < len(lines) and len(tx_values) < 2:
                     current_line = lines[j].strip()
-                    if current_line != '/':  # Пропускаем разделитель
+                    if current_line != '/':
                         if re.match(r'^\d+(?:,\d+)*$', current_line):
                             tx_values.append(current_line)
                     j += 1
@@ -112,7 +182,6 @@ def extract_pnl_values(text):
         for i, line in enumerate(lines):
             if 'Total PnL' in line and i + 1 < len(lines):
                 pnl_line = lines[i + 1]
-                # Ищем сумму
                 amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
                 if amount_match:
                     pnl_value = amount_match.group(1)
@@ -121,7 +190,6 @@ def extract_pnl_values(text):
                     else:
                         values[2] = pnl_value
 
-                # Ищем процент
                 percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
                 if percent_match:
                     percent_value = percent_match.group(1)
@@ -143,7 +211,7 @@ def extract_pnl_values(text):
                     next_line = lines[i + 1]
                     value = extract_value(next_line)
                     if next_line.startswith('-'):
-                        if value.startswith('-'):  # Избегаем двойных минусов
+                        if value.startswith('-'):
                             values[index] = value
                         else:
                             values[index] = f"-{value}"
@@ -174,42 +242,6 @@ async def setup_browser(playwright):
         ]
     )
     return browser
-
-class SheetManager:
-    def __init__(self, sheet):
-        self.sheet = sheet
-        self.last_request_time = 0
-        self.data_cache = {}
-        
-    async def get_range(self, range_name):
-        await self._wait_for_rate_limit()
-        if range_name in self.data_cache:
-            return self.data_cache[range_name]
-        data = self.sheet.get(range_name)
-        self.data_cache[range_name] = data
-        return data
-    
-    async def update_range(self, range_name, values):
-        await self._wait_for_rate_limit()
-        self.sheet.update(range_name=range_name, values=values, value_input_option='RAW')
-        
-    async def get_batch_urls(self, start_row, batch_size):
-        range_name = f'C{start_row}:C{start_row + batch_size - 1}'
-        try:
-            await self._wait_for_rate_limit()
-            values = self.sheet.get(range_name)
-            return [val[0] if val else None for val in values] if values else []
-        except Exception as e:
-            logger.error(f"Error getting URLs: {e}")
-            await asyncio.sleep(5)  # Дополнительная задержка при ошибке
-            return []
-    
-    async def _wait_for_rate_limit(self):
-        current_time = time.time()
-        time_since_last_request = current_time - self.last_request_time
-        if time_since_last_request < CONFIG["SHEETS_API_DELAY"]:
-            await asyncio.sleep(CONFIG["SHEETS_API_DELAY"] - time_since_last_request)
-        self.last_request_time = time.time()
 
 async def parse_url(url, browser):
     """Парсит один URL"""
@@ -297,7 +329,6 @@ async def process_batch(urls, browser):
 async def process_with_retries(sheet_manager, browser, start_row):
     """Обрабатывает батч с повторными попытками при ошибках"""
     max_retries = 3
-    retry_delay = 5
     
     for retry in range(max_retries):
         try:
@@ -313,14 +344,18 @@ async def process_with_retries(sheet_manager, browser, start_row):
                 logger.info(f"Updating range {range_name}")
                 await sheet_manager.update_range(range_name, values)
                 logger.info(f"Updated {len(values)} rows")
-            return
+            
+            # Добавляем задержку между батчами
+            await asyncio.sleep(CONFIG["BATCH_DELAY"])
+            return True
             
         except Exception as e:
             logger.error(f"Error processing batch at row {start_row} (attempt {retry + 1}): {e}")
             if retry < max_retries - 1:
-                await asyncio.sleep(retry_delay * (retry + 1))
+                await asyncio.sleep(CONFIG["SHEETS_API_DELAY"] * (retry + 2))
             else:
                 logger.error(f"Failed to process batch at row {start_row} after {max_retries} attempts")
+                return False
 
 async def main():
     logger.info("Starting parser")
@@ -347,8 +382,12 @@ async def main():
             
             for i in range(0, CONFIG["TOTAL_URLS"], CONFIG["BATCH_SIZE"]):
                 start_row = CONFIG["START_ROW"] + i
-                await process_with_retries(sheet_manager, browser, start_row)
-                await asyncio.sleep(CONFIG["SHEETS_API_DELAY"])
+                success = await process_with_retries(sheet_manager, browser, start_row)
+                
+                if not success:
+                    logger.warning(f"Skipping to next batch after row {start_row}")
+                    await asyncio.sleep(CONFIG["BATCH_DELAY"] * 2)
+                    continue
 
             await browser.close()
 
