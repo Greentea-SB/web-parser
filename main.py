@@ -39,7 +39,7 @@ CONFIG = {
     "MAX_CONCURRENT_BROWSERS": 3,
     "NAVIGATION_TIMEOUT": 60000,
     "WAIT_TIMEOUT": 10000,
-    "SHEETS_API_DELAY": 2  # Задержка между запросами к API
+    "SHEETS_API_DELAY": 2
 }
 
 USER_AGENTS = [
@@ -51,7 +51,111 @@ USER_AGENTS = [
 
 PROXIES = []
 
-# ... (оставляем все вспомогательные функции без изменений: is_valid_number, clean_numeric_values, extract_value, extract_pnl_values)
+def is_valid_number(text):
+    """Проверяет, является ли текст числом (включая числа с запятыми)"""
+    text = text.strip()
+    # Паттерн для проверки числа с запятыми, точками или без них
+    pattern = r'^-?\d+(?:,\d+)*(?:\.\d+)?$'
+    return bool(re.match(pattern, text))
+
+def clean_numeric_values(data_list):
+    """Очищает числовые значения от плюсов, сохраняя минусы и запятые"""
+    cleaned = []
+    for item in data_list:
+        if isinstance(item, str):
+            item = item.strip()
+            if item.startswith('+'):
+                item = item[1:]
+        cleaned.append(item)
+    return cleaned
+
+def extract_value(text):
+    """Очищает значение от символов валюты и плюсов, сохраняя минусы и запятые"""
+    if not text or text == 'N/A':
+        return text
+    value = text.strip()
+    if value.startswith('+$'):
+        value = value[2:]
+    elif value.startswith('$'):
+        value = value[1:]
+    elif value.startswith('+'):
+        value = value[1:]
+    return value
+
+def extract_pnl_values(text):
+    """Извлекает значения из текста PnL с сохранением форматирования"""
+    logger.info(f"Raw PnL text: {text}")
+    values = ['N/A'] * 7  # [txs1, txs2, total_pnl, pnl_percent, unrealized, duration, total_cost]
+
+    try:
+        # Разбиваем текст на строки и удаляем пустые
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        logger.info(f"Split lines: {lines}")
+
+        # Получаем числа TXs
+        for i, line in enumerate(lines):
+            if '7D TXs' in line:
+                tx_values = []
+                j = i + 1
+                while j < len(lines) and len(tx_values) < 2:
+                    current_line = lines[j].strip()
+                    if current_line != '/':  # Пропускаем разделитель
+                        if re.match(r'^\d+(?:,\d+)*$', current_line):
+                            tx_values.append(current_line)
+                    j += 1
+                if len(tx_values) >= 2:
+                    values[0] = tx_values[0]
+                    values[1] = tx_values[1]
+                break
+
+        # Получаем Total PnL и процент
+        for i, line in enumerate(lines):
+            if 'Total PnL' in line and i + 1 < len(lines):
+                pnl_line = lines[i + 1]
+                # Ищем сумму
+                amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
+                if amount_match:
+                    pnl_value = amount_match.group(1)
+                    if '-' in pnl_line and pnl_line.index('-') < pnl_line.index(pnl_value):
+                        values[2] = f"-{pnl_value}"
+                    else:
+                        values[2] = pnl_value
+
+                # Ищем процент
+                percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
+                if percent_match:
+                    percent_value = percent_match.group(1)
+                    if percent_value.startswith('+'):
+                        percent_value = percent_value[1:]
+                    values[3] = f"{percent_value}%"
+
+        # Словарь соответствия меток и индексов
+        label_mapping = {
+            'Unrealized Profits': 4,
+            '7D Avg Duration': 5,
+            '7D Total Cost': 6
+        }
+
+        # Получаем остальные значения
+        for i, line in enumerate(lines):
+            for label, index in label_mapping.items():
+                if label in line and i + 1 < len(lines):
+                    next_line = lines[i + 1]
+                    value = extract_value(next_line)
+                    if next_line.startswith('-'):
+                        if value.startswith('-'):  # Избегаем двойных минусов
+                            values[index] = value
+                        else:
+                            values[index] = f"-{value}"
+                    else:
+                        values[index] = value
+
+        logger.info(f"Extracted values: {values}")
+        return values
+
+    except Exception as e:
+        logger.error(f"Error parsing PnL block: {e}")
+        return values
 
 async def setup_browser(playwright):
     """Создает новый браузер с оптимизированными настройками"""
@@ -75,20 +179,30 @@ class SheetManager:
     def __init__(self, sheet):
         self.sheet = sheet
         self.last_request_time = 0
+        self.data_cache = {}
         
     async def get_range(self, range_name):
         await self._wait_for_rate_limit()
-        return self.sheet.get(range_name)
+        if range_name in self.data_cache:
+            return self.data_cache[range_name]
+        data = self.sheet.get(range_name)
+        self.data_cache[range_name] = data
+        return data
     
     async def update_range(self, range_name, values):
         await self._wait_for_rate_limit()
         self.sheet.update(range_name=range_name, values=values, value_input_option='RAW')
-    
+        
     async def get_batch_urls(self, start_row, batch_size):
-        await self._wait_for_rate_limit()
         range_name = f'C{start_row}:C{start_row + batch_size - 1}'
-        values = self.sheet.get(range_name)
-        return [val[0] if val else None for val in values] if values else []
+        try:
+            await self._wait_for_rate_limit()
+            values = self.sheet.get(range_name)
+            return [val[0] if val else None for val in values] if values else []
+        except Exception as e:
+            logger.error(f"Error getting URLs: {e}")
+            await asyncio.sleep(5)  # Дополнительная задержка при ошибке
+            return []
     
     async def _wait_for_rate_limit(self):
         current_time = time.time()
@@ -180,6 +294,34 @@ async def process_batch(urls, browser):
     
     return values
 
+async def process_with_retries(sheet_manager, browser, start_row):
+    """Обрабатывает батч с повторными попытками при ошибках"""
+    max_retries = 3
+    retry_delay = 5
+    
+    for retry in range(max_retries):
+        try:
+            urls = await sheet_manager.get_batch_urls(start_row, CONFIG["BATCH_SIZE"])
+            if not urls:
+                return
+                
+            logger.info(f"Processing batch of {len(urls)} URLs starting at row {start_row}")
+            values = await process_batch(urls, browser)
+            
+            if values:
+                range_name = f'D{start_row}:M{start_row + len(values) - 1}'
+                logger.info(f"Updating range {range_name}")
+                await sheet_manager.update_range(range_name, values)
+                logger.info(f"Updated {len(values)} rows")
+            return
+            
+        except Exception as e:
+            logger.error(f"Error processing batch at row {start_row} (attempt {retry + 1}): {e}")
+            if retry < max_retries - 1:
+                await asyncio.sleep(retry_delay * (retry + 1))
+            else:
+                logger.error(f"Failed to process batch at row {start_row} after {max_retries} attempts")
+
 async def main():
     logger.info("Starting parser")
     try:
@@ -205,30 +347,8 @@ async def main():
             
             for i in range(0, CONFIG["TOTAL_URLS"], CONFIG["BATCH_SIZE"]):
                 start_row = CONFIG["START_ROW"] + i
-                
-                try:
-                    urls = await sheet_manager.get_batch_urls(start_row, CONFIG["BATCH_SIZE"])
-                    
-                    if not urls:
-                        continue
-
-                    logger.info(f"Processing batch of {len(urls)} URLs starting at row {start_row}")
-                    values = await process_batch(urls, browser)
-
-                    if values:
-                        range_name = f'D{start_row}:M{start_row + len(values) - 1}'
-                        logger.info(f"Updating range {range_name}")
-                        await sheet_manager.update_range(range_name, values)
-                        logger.info(f"Updated {len(values)} rows")
-
-                    # Добавляем задержку между батчами
-                    await asyncio.sleep(CONFIG["SHEETS_API_DELAY"])
-
-                except Exception as e:
-                    logger.error(f"Error processing batch starting at row {start_row}: {e}")
-                    # Добавляем дополнительную задержку при ошибке
-                    await asyncio.sleep(CONFIG["SHEETS_API_DELAY"] * 2)
-                    continue
+                await process_with_retries(sheet_manager, browser, start_row)
+                await asyncio.sleep(CONFIG["SHEETS_API_DELAY"])
 
             await browser.close()
 
