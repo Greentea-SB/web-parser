@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import re
+import time
 from playwright.async_api import async_playwright
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -25,9 +26,9 @@ CONFIG = {
     "CREDS_FILE": "temp_key.json",
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 5,  # Уменьшено с 10
-    "PAGE_LOAD_DELAY": 2,  # Уменьшено с 5
-    "MAX_CONCURRENT_PAGES": 10,  # Увеличено с 5
+    "REQUEST_DELAY": 5,
+    "PAGE_LOAD_DELAY": 2,
+    "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 24,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
@@ -35,17 +36,115 @@ CONFIG = {
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     },
-    "BROWSER_POOL_SIZE": 3,  # Количество параллельных браузеров
-    "URLS_PER_BROWSER": 4,  # Количество URL на один браузер
-    "SHEETS_BATCH_SIZE": 20,  # Размер батча для обновления таблицы
+    "BROWSER_POOL_SIZE": 3,
+    "URLS_PER_BROWSER": 4,
+    "SHEETS_BATCH_SIZE": 20,
 }
 
-# Добавляем список прокси (замените на реальные прокси)
-PROXIES = [
-    "http://proxy1:port",
-    "http://proxy2:port",
-    "http://proxy3:port",
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 ]
+
+PROXIES = []
+
+def is_valid_number(text):
+    text = text.strip()
+    pattern = r'^-?\d+(?:,\d+)*(?:\.\d+)?$'
+    return bool(re.match(pattern, text))
+
+def clean_numeric_values(data_list):
+    cleaned = []
+    for item in data_list:
+        if isinstance(item, str):
+            item = item.strip()
+            if item.startswith('+'):
+                item = item[1:]
+        cleaned.append(item)
+    return cleaned
+
+def extract_value(text):
+    if not text or text == 'N/A':
+        return text
+    value = text.strip()
+    if value.startswith('+$'):
+        value = value[2:]
+    elif value.startswith('$'):
+        value = value[1:]
+    elif value.startswith('+'):
+        value = value[1:]
+    return value
+
+def extract_pnl_values(text):
+    logger.info(f"Raw PnL text: {text}")
+    values = ['N/A'] * 7
+
+    try:
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        logger.info(f"Split lines: {lines}")
+
+        # Получаем числа TXs
+        for i, line in enumerate(lines):
+            if '7D TXs' in line:
+                tx_values = []
+                j = i + 1
+                while j < len(lines) and len(tx_values) < 2:
+                    current_line = lines[j].strip()
+                    if current_line != '/':
+                        if re.match(r'^\d+(?:,\d+)*$', current_line):
+                            tx_values.append(current_line)
+                    j += 1
+                if len(tx_values) >= 2:
+                    values[0] = tx_values[0]
+                    values[1] = tx_values[1]
+                break
+
+        # Получаем Total PnL и процент
+        for i, line in enumerate(lines):
+            if 'Total PnL' in line and i + 1 < len(lines):
+                pnl_line = lines[i + 1]
+                amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
+                if amount_match:
+                    pnl_value = amount_match.group(1)
+                    if '-' in pnl_line and pnl_line.index('-') < pnl_line.index(pnl_value):
+                        values[2] = f"-{pnl_value}"
+                    else:
+                        values[2] = pnl_value
+
+                percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
+                if percent_match:
+                    percent_value = percent_match.group(1)
+                    if percent_value.startswith('+'):
+                        percent_value = percent_value[1:]
+                    values[3] = f"{percent_value}%"
+
+        label_mapping = {
+            'Unrealized Profits': 4,
+            '7D Avg Duration': 5,
+            '7D Total Cost': 6
+        }
+
+        for i, line in enumerate(lines):
+            for label, index in label_mapping.items():
+                if label in line and i + 1 < len(lines):
+                    next_line = lines[i + 1]
+                    value = extract_value(next_line)
+                    if next_line.startswith('-'):
+                        if value.startswith('-'):
+                            values[index] = value
+                        else:
+                            values[index] = f"-{value}"
+                    else:
+                        values[index] = value
+
+        logger.info(f"Extracted values: {values}")
+        return values
+
+    except Exception as e:
+        logger.error(f"Error parsing PnL block: {e}")
+        return values
 
 class BrowserPool:
     def __init__(self, playwright, size):
@@ -101,7 +200,7 @@ class SheetManager:
     async def update_values(self, start_row, values):
         async with self.update_lock:
             current_time = time.time()
-            if current_time - self.last_update < 1:  # Минимальный интервал между обновлениями
+            if current_time - self.last_update < 1:
                 await asyncio.sleep(1)
             
             range_name = f'D{start_row}:M{start_row + len(values) - 1}'
@@ -113,6 +212,7 @@ class SheetManager:
                         value_input_option='RAW'
                     )
                     self.last_update = time.time()
+                    logger.info(f"Updated range {range_name}")
                     return True
                 except Exception as e:
                     logger.error(f"Error updating sheet (attempt {attempt + 1}): {e}")
@@ -145,7 +245,6 @@ async def parse_with_browser(url, browser):
             'pnl_values': ['N/A'] * 7
         }
 
-        # Парсинг базовых колонок
         for col in ['col_d', 'col_e', 'col_f']:
             for selector in CONFIG["TARGET_CLASSES"][col]:
                 try:
@@ -159,7 +258,6 @@ async def parse_with_browser(url, browser):
                 except Exception:
                     continue
 
-        # Парсинг PnL блока
         try:
             pnl_element = await page.wait_for_selector('.css-1ug9me3', timeout=5000)
             if pnl_element:
@@ -205,7 +303,6 @@ async def process_url_batch(urls, browser_pool):
 async def main():
     logger.info("Starting parser")
     try:
-        # Инициализация Google Sheets
         encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
         if not encoded_creds:
             raise ValueError("GOOGLE_CREDENTIALS_BASE64 not set")
@@ -224,18 +321,15 @@ async def main():
         logger.info("Connected to Google Sheet")
 
         async with async_playwright() as playwright:
-            # Инициализация пула браузеров
             browser_pool = BrowserPool(playwright, CONFIG["BROWSER_POOL_SIZE"])
             await browser_pool.initialize()
             logger.info("Browser pool initialized")
 
-            # Получаем все URL сразу
             all_urls = await sheet_manager.get_urls_batch(
                 CONFIG["START_ROW"],
                 CONFIG["TOTAL_URLS"]
             )
             
-            # Обработка URL батчами
             tasks = []
             results = []
             
@@ -244,17 +338,14 @@ async def main():
                 if not any(batch_urls):
                     continue
                 
-                # Создаем задачу для батча
                 task = process_url_batch(batch_urls, browser_pool)
                 tasks.append(task)
                 
-                # Если накопилось достаточно задач или это последний батч
                 if len(tasks) >= CONFIG["BROWSER_POOL_SIZE"] * CONFIG["URLS_PER_BROWSER"] or (i + CONFIG["URLS_PER_BROWSER"]) >= len(all_urls):
                     batch_results = await asyncio.gather(*tasks)
                     results.extend([item for sublist in batch_results for item in sublist])
                     tasks = []
                     
-                    # Обновляем таблицу батчами
                     if len(results) >= CONFIG["SHEETS_BATCH_SIZE"] or (i + CONFIG["URLS_PER_BROWSER"]) >= len(all_urls):
                         start_idx = len(results) - len(results) % CONFIG["SHEETS_BATCH_SIZE"]
                         if start_idx > 0:
@@ -266,11 +357,10 @@ async def main():
                             
                             if not success:
                                 logger.error(f"Failed to update batch starting at row {update_row}")
-                                await asyncio.sleep(10)  # Дополнительная задержка при ошибке
+                                await asyncio.sleep(10)
                 
                 await asyncio.sleep(CONFIG["REQUEST_DELAY"])
 
-            # Закрываем все браузеры
             await browser_pool.close_all()
             logger.info("Parser finished successfully")
 
