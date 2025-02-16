@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import re
+import time
 from playwright.async_api import async_playwright
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -25,9 +26,9 @@ CONFIG = {
     "CREDS_FILE": "temp_key.json",
     "MAX_RETRIES": 3,
     "MAX_NA_RETRIES": 5,
-    "REQUEST_DELAY": 3,  # Уменьшено с 10
-    "PAGE_LOAD_DELAY": 2,  # Уменьшено с 5
-    "MAX_CONCURRENT_PAGES": 10,  # Увеличено с 5
+    "REQUEST_DELAY": 3,
+    "PAGE_LOAD_DELAY": 2,
+    "MAX_CONCURRENT_PAGES": 10,
     "START_ROW": 14,
     "TOTAL_URLS": 260,
     "TARGET_CLASSES": {
@@ -35,9 +36,9 @@ CONFIG = {
         'col_e': ['css-sahmrr', 'css-kavdos', 'css-1598eja'],
         'col_f': ['css-j4xe5q', 'css-d865bw', 'css-krr03m']
     },
-    "BATCH_SIZE": 20,  # Размер батча для обновления таблицы
-    "MAX_PARALLEL_BATCHES": 3,  # Максимальное количество параллельных батчей
-    "MIN_REQUEST_INTERVAL": 1,  # Минимальный интервал между запросами
+    "BATCH_SIZE": 20,
+    "MAX_PARALLEL_BATCHES": 3,
+    "MIN_REQUEST_INTERVAL": 1,
 }
 
 USER_AGENTS = [
@@ -65,14 +66,11 @@ class RequestManager:
             self.last_request_time[domain] = time.time()
 
 def is_valid_number(text):
-    """Проверяет, является ли текст числом (включая числа с запятыми)"""
     text = text.strip()
-    # Паттерн для проверки числа с запятыми, точками или без них
     pattern = r'^-?\d+(?:,\d+)*(?:\.\d+)?$'
     return bool(re.match(pattern, text))
 
 def clean_numeric_values(data_list):
-    """Очищает числовые значения от плюсов, сохраняя минусы и запятые"""
     cleaned = []
     for item in data_list:
         if isinstance(item, str):
@@ -83,7 +81,6 @@ def clean_numeric_values(data_list):
     return cleaned
 
 def extract_value(text):
-    """Очищает значение от символов валюты и плюсов, сохраняя минусы и запятые"""
     if not text or text == 'N/A':
         return text
     value = text.strip()
@@ -96,14 +93,16 @@ def extract_value(text):
     return value
 
 def extract_pnl_values(text):
-    """Извлекает значения из текста PnL с сохранением форматирования"""
     logger.info(f"Raw PnL text: {text}")
-    values = ['N/A'] * 7  # [txs1, txs2, total_pnl, pnl_percent, unrealized, duration, total_cost]
+    values = ['N/A'] * 7
 
     try:
-        # Разбиваем текст на строки и удаляем пустые
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         logger.info(f"Split lines: {lines}")
+
+        # Проверяем на '--'
+        if all(line == '--' for line in lines if line not in ['PnL', '7D TXs', '/', 'Total PnL', 'Unrealized Profits', '7D Avg Duration', '7D Total Cost']):
+            return values
 
         # Получаем числа TXs
         for i, line in enumerate(lines):
@@ -112,8 +111,7 @@ def extract_pnl_values(text):
                 j = i + 1
                 while j < len(lines) and len(tx_values) < 2:
                     current_line = lines[j].strip()
-                    if current_line != '/':  # Пропускаем разделитель
-                        # Сохраняем числа как есть, включая запятые
+                    if current_line != '/' and current_line != '--':
                         if re.match(r'^\d+(?:,\d+)*$', current_line):
                             tx_values.append(current_line)
                     j += 1
@@ -126,22 +124,23 @@ def extract_pnl_values(text):
         for i, line in enumerate(lines):
             if 'Total PnL' in line and i + 1 < len(lines):
                 pnl_line = lines[i + 1]
-                # Ищем сумму
-                amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
-                if amount_match:
-                    pnl_value = amount_match.group(1)
-                    if '-' in pnl_line and pnl_line.index('-') < pnl_line.index(pnl_value):
-                        values[2] = f"-{pnl_value}"
-                    else:
-                        values[2] = pnl_value
+                if pnl_line != '--':
+                    # Ищем сумму
+                    amount_match = re.search(r'[\+\-]?\$?([\d,.]+[KMB]?)', pnl_line)
+                    if amount_match:
+                        pnl_value = amount_match.group(1)
+                        if '-' in pnl_line and pnl_line.index('-') < pnl_line.index(pnl_value):
+                            values[2] = f"-{pnl_value}"
+                        else:
+                            values[2] = pnl_value
 
-                # Ищем процент
-                percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
-                if percent_match:
-                    percent_value = percent_match.group(1)
-                    if percent_value.startswith('+'):
-                        percent_value = percent_value[1:]
-                    values[3] = f"{percent_value}%"
+                    # Ищем процент
+                    percent_match = re.search(r'\(([-\+]?\d+\.?\d*)%\)', pnl_line)
+                    if percent_match:
+                        percent_value = percent_match.group(1)
+                        if percent_value.startswith('+'):
+                            percent_value = percent_value[1:]
+                        values[3] = f"{percent_value}%"
 
         # Словарь соответствия меток и индексов
         label_mapping = {
@@ -155,14 +154,15 @@ def extract_pnl_values(text):
             for label, index in label_mapping.items():
                 if label in line and i + 1 < len(lines):
                     next_line = lines[i + 1]
-                    value = extract_value(next_line)
-                    if next_line.startswith('-'):
-                        if value.startswith('-'):  # Избегаем двойных минусов
-                            values[index] = value
+                    if next_line != '--':
+                        value = extract_value(next_line)
+                        if next_line.startswith('-'):
+                            if value.startswith('-'):
+                                values[index] = value
+                            else:
+                                values[index] = f"-{value}"
                         else:
-                            values[index] = f"-{value}"
-                    else:
-                        values[index] = value
+                            values[index] = value
 
         logger.info(f"Extracted values: {values}")
         return values
@@ -180,7 +180,9 @@ async def setup_browser():
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-web-security',
-            '--disable-features=IsolateOrigins,site-per-process'
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
         ]
     )
     return browser, playwright
@@ -202,20 +204,65 @@ async def parse_data(url, browser, error_attempt=1):
         if response.status >= 400:
             logger.error(f"HTTP error {response.status} for URL: {url}")
             return None
-            
+
         await asyncio.sleep(CONFIG["PAGE_LOAD_DELAY"])
 
-        # ... (остальной код parse_data остается прежним)
+        results = {
+            'col_d': ["N/A"],
+            'col_e': ["N/A"],
+            'col_f': ["N/A"],
+            'pnl_values': ['N/A'] * 7
+        }
+
+        for col in ['col_d', 'col_e', 'col_f']:
+            for selector in CONFIG["TARGET_CLASSES"][col]:
+                try:
+                    element = await page.wait_for_selector(f'.{selector}', timeout=5000)
+                    if element:
+                        text = await element.inner_text()
+                        if text.startswith('+'):
+                            text = text[1:]
+                        results[col] = [text]
+                        break
+                except Exception:
+                    continue
+
+        try:
+            pnl_element = await page.wait_for_selector('.css-1ug9me3', timeout=5000)
+            if pnl_element:
+                pnl_text = await pnl_element.inner_text()
+                if pnl_text:
+                    results['pnl_values'] = extract_pnl_values(pnl_text)
+        except Exception as e:
+            logger.error(f"Error parsing PnL block for {url}: {e}")
+
+        return results
 
     except Exception as e:
         logger.error(f"Error in parse_data: {e}")
         if error_attempt < CONFIG["MAX_RETRIES"]:
-            delay = CONFIG["REQUEST_DELAY"] * (2 ** error_attempt)  # Экспоненциальная задержка
+            delay = CONFIG["REQUEST_DELAY"] * (2 ** error_attempt)
             await asyncio.sleep(delay)
             return await parse_data(url, browser, error_attempt + 1)
         return None
     finally:
         await context.close()
+
+async def process_single_url(url, browser):
+    for attempt in range(CONFIG["MAX_NA_RETRIES"]):
+        result = await parse_data(url, browser)
+        if result and any(v != 'N/A' for v in result['pnl_values'][:4]):
+            return result
+        logger.info(f"Attempt {attempt + 1} failed, retrying after delay...")
+        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
+
+    return {
+        'col_d': ["N/A"],
+        'col_e': ["N/A"],
+        'col_f': ["N/A"],
+        'pnl_values': ['N/A'] * 7
+    }
+
 async def process_urls(urls, browser, request_manager):
     logger.info(f"Processing {len(urls)} URLs")
     
@@ -225,7 +272,6 @@ async def process_urls(urls, browser, request_manager):
             return await process_single_url(url, browser)
         return None
 
-    # Разбиваем URLs на меньшие группы для более равномерной нагрузки
     chunk_size = 5
     chunks = [urls[i:i + chunk_size] for i in range(0, len(urls), chunk_size)]
     
@@ -234,7 +280,7 @@ async def process_urls(urls, browser, request_manager):
         tasks = [process_url(url) for url in chunk]
         chunk_results = await asyncio.gather(*tasks)
         all_results.extend(chunk_results)
-        await asyncio.sleep(1)  # Небольшая пауза между чанками
+        await asyncio.sleep(1)
 
     values = []
     for res in all_results:
@@ -250,34 +296,7 @@ async def process_urls(urls, browser, request_manager):
 
     return values
 
-async def process_urls(urls, browser):
-    logger.info(f"Processing {len(urls)} URLs")
-    
-    # Создаем список задач для асинхронного выполнения
-    tasks = []
-    for url in urls:
-        if url:  # Проверяем, что URL не пустой
-            tasks.append(process_single_url(url, browser))
-    
-    # Запускаем все задачи одновременно
-    results = await asyncio.gather(*tasks)
-    
-    values = []
-    for res in results:
-        if res:
-            row_values = [
-                ', '.join(clean_numeric_values(res.get('col_d', [])[:3])),
-                ', '.join(clean_numeric_values(res.get('col_e', [])[:3])),
-                ', '.join(clean_numeric_values(res.get('col_f', [])[:3])),
-                *(res.get('pnl_values', ['N/A'] * 7))
-            ]
-            logger.info(f"Row values: {row_values}")
-            values.append(row_values)
-
-    return values
-
 async def update_sheet(sheet, start_row, values):
-    """Отдельная функция для обновления таблицы с повторными попытками"""
     max_retries = 3
     retry_delay = 10
     
@@ -298,49 +317,38 @@ async def update_sheet(sheet, start_row, values):
                 await asyncio.sleep(retry_delay)
     return False
 
-async def process_batch(sheet, browser, start_row, batch_size):
-    """Обработка одного батча URL"""
-    try:
-        urls = [sheet.cell(start_row + j, 3).value for j in range(batch_size)]
-        urls = [url for url in urls if url and url.startswith('http')]
-        
-        if not urls:
-            logger.info(f"No URLs found starting at row {start_row}")
-            return True
-
-        logger.info(f"Processing batch starting at row {start_row}")
-        values = await process_urls(urls, browser)
-
-        if values:
-            success = await update_sheet(sheet, start_row, values)
-            if not success:
-                logger.error(f"Failed to update sheet for batch starting at row {start_row}")
-                return False
-
-        await asyncio.sleep(CONFIG["REQUEST_DELAY"])
-        return True
-
-    except Exception as e:
-        logger.error(f"Error processing batch at row {start_row}: {e}")
-        return False
-
 async def main():
     logger.info("Starting parser")
     try:
-        # ... (код инициализации остается прежним до создания browser)
+        encoded_creds = os.getenv('GOOGLE_CREDENTIALS_BASE64')
+        if not encoded_creds:
+            raise ValueError("GOOGLE_CREDENTIALS_BASE64 not set")
 
+        with open(CONFIG["CREDS_FILE"], 'w') as f:
+            f.write(base64.b64decode(encoded_creds).decode('utf-8'))
+
+        gc = gspread.authorize(
+            ServiceAccountCredentials.from_json_keyfile_name(
+                CONFIG["CREDS_FILE"],
+                ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+            )
+        )
+        sheet = gc.open_by_key(CONFIG["SPREADSHEET_ID"]).worksheet(CONFIG["SHEET_NAME"])
+        logger.info("Connected to Google Sheet")
+
+        browser, playwright = await setup_browser()
         request_manager = RequestManager()
-        
-        # Получаем все URL сразу
+        logger.info("Browser setup complete")
+
+        # Получаем все URL
         all_urls = []
         for i in range(0, CONFIG["TOTAL_URLS"], CONFIG["MAX_CONCURRENT_PAGES"]):
             start_row = CONFIG["START_ROW"] + i
-            urls = [sheet.cell(start_row + j, 3).value for j in range(CONFIG["MAX_CONCURRENT_PAGES"])]
-            urls = [url for url in urls if url and url.startswith('http')]
-            all_urls.extend(urls)
+            row_urls = [sheet.cell(start_row + j, 3).value for j in range(CONFIG["MAX_CONCURRENT_PAGES"])]
+            row_urls = [url for url in row_urls if url and url.startswith('http')]
+            all_urls.extend(row_urls)
 
         # Обрабатываем URL батчами
-        results = []
         for i in range(0, len(all_urls), CONFIG["BATCH_SIZE"]):
             batch_urls = all_urls[i:i + CONFIG["BATCH_SIZE"]]
             if not batch_urls:
@@ -358,7 +366,7 @@ async def main():
                     await asyncio.sleep(10)
                 else:
                     logger.info(f"Successfully updated batch starting at row {start_row}")
-                    await asyncio.sleep(2)  # Небольшая пауза между обновлениями таблицы
+                    await asyncio.sleep(2)
 
         await browser.close()
         await playwright.stop()
