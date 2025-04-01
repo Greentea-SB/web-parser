@@ -1,8 +1,8 @@
 name: Advanced Parser
 
 on:
-  schedule:
-    - cron: '0 8 * * *'  # Новое расписание: ежедневно в 08:00 UTC
+  # schedule:
+    # - cron: '0 8 * * *'  # Новое расписание: ежедневно в 08:00 UTC
   workflow_dispatch:
 
 jobs:
